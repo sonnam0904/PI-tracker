@@ -136,3 +136,15 @@ capacity = 2    # mức trần tối đa
 PI = min( (T / (T_baseline × số người)) × (CT_baseline / CT), capacity )
 ```
 
+---
+
+## 🤝 Đóng góp & cộng đồng
+
+- [Hướng dẫn đóng góp](CONTRIBUTING.md)
+- [Quy tắc ứng xử](CODE_OF_CONDUCT.md)
+- [Chính sách bảo mật](SECURITY.md) — báo cáo lỗ hổng riêng tư, không mở issue công khai.
+
+## 📄 Giấy phép
+
+Phát hành theo giấy phép [MIT](LICENSE).
+
