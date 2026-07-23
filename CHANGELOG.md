@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/sonnam0904/PI-tracker/compare/v1.2.0...v1.3.0) (2026-07-23)
+
+
+### Features
+
+* implement session management for multi-account login ([6b6ad33](https://github.com/sonnam0904/PI-tracker/commit/6b6ad339138743fffd520536c6b569ff798b3d77))
+
 # [1.2.0](https://github.com/sonnam0904/PI-tracker/compare/v1.1.0...v1.2.0) (2026-07-23)
 
 
