@@ -1,6 +1,6 @@
 # Task Manager — PI Tracker
 
-> Ứng dụng desktop quản lý task cho team dev và theo dõi **Performance Index (PI)** theo tháng. 
+> Ứng dụng desktop quản lý task cho team dev và theo dõi **Performance Index (PI)** theo tháng.   
 
 ---
 
