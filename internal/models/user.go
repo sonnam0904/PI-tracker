@@ -10,6 +10,16 @@ type User struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
+// Session — phiên đăng nhập được "ghi nhớ" trên máy người dùng. Chỉ token
+// (chuỗi ngẫu nhiên, opaque) được lưu ở local máy client; KHÔNG bao giờ lưu
+// username/mật khẩu. Token này quy chiếu về user ở server-side.
+type Session struct {
+	Token     string    `gorm:"primaryKey" json:"token"`
+	UserID    uint      `gorm:"index;not null" json:"userId"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `gorm:"index" json:"expiresAt"` // hết hạn → coi như chưa đăng nhập
+}
+
 // Workspace — không gian làm việc; mọi task/settings/thành viên scope theo đây.
 type Workspace struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`

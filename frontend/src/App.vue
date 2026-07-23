@@ -1,7 +1,9 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { GetSession, Logout, ListWorkspaces, SelectWorkspace, CreateWorkspace, AppVersion } from '../wailsjs/go/main/App'
+import { ref, computed, onMounted } from 'vue'
+import { GetSession, Logout, ResumeSession, ListSavedAccounts, ForgetAccount, ListWorkspaces, SelectWorkspace, CreateWorkspace, AppVersion } from '../wailsjs/go/main/App'
+import { getTokens, setTokens, removeToken } from './lib/session'
 import AuthView from './components/AuthView.vue'
+import AccountPicker from './components/AccountPicker.vue'
 import NotificationBell from './components/NotificationBell.vue'
 import UpdateBanner from './components/UpdateBanner.vue'
 import Dashboard from './components/Dashboard.vue'
@@ -27,6 +29,20 @@ const version = ref('') // phiên bản app đang chạy, hiện ở sidebar
 const menuOpen = ref(false) // menu xổ từ nút thoát (Kiểm tra cập nhật / Thoát)
 const updateBanner = ref(null) // tham chiếu UpdateBanner để kiểm tra thủ công
 
+// Đa tài khoản: authScreen = '' (đã vào app) | 'picker' (chọn tài khoản) |
+// 'login' (đăng nhập/thêm tài khoản). savedAccounts = các tài khoản đã ghi nhớ.
+const authScreen = ref('')
+const savedAccounts = ref([])
+
+const loggedIn = computed(() => !!session.value?.userId)
+// Tài khoản khác (để chuyển nhanh) và token của tài khoản đang mở.
+const otherAccounts = computed(() =>
+  savedAccounts.value.filter(a => a.userId !== session.value?.userId)
+)
+const activeToken = computed(() =>
+  savedAccounts.value.find(a => a.userId === session.value?.userId)?.token || ''
+)
+
 function checkUpdate() {
   menuOpen.value = false
   updateBanner.value?.check(true)
@@ -50,7 +66,31 @@ async function refresh() {
     error.value = String(e)
   }
 }
-onMounted(refresh)
+
+// Nạp danh sách tài khoản đã ghi nhớ (giải mã + xác thực ở backend) và prune
+// lại token local theo kết quả (bỏ token hỏng/hết hạn/của máy khác).
+async function loadSavedAccounts() {
+  const tokens = getTokens()
+  if (!tokens.length) {
+    savedAccounts.value = []
+    return
+  }
+  try {
+    const accts = await ListSavedAccounts(tokens)
+    savedAccounts.value = accts
+    setTokens(accts.map(a => a.token))
+  } catch {
+    savedAccounts.value = []
+  }
+}
+
+onMounted(async () => {
+  // Mỗi lần mở app: session trong bộ nhớ backend rỗng → hiện màn chọn tài
+  // khoản nếu có tài khoản đã ghi nhớ, ngược lại hiện màn đăng nhập.
+  session.value = await GetSession()
+  await loadSavedAccounts()
+  authScreen.value = savedAccounts.value.length ? 'picker' : 'login'
+})
 onMounted(async () => {
   try {
     version.value = await AppVersion()
@@ -60,14 +100,57 @@ onMounted(async () => {
 })
 
 async function onLoggedIn() {
+  await loadSavedAccounts()
   await refresh()
+  authScreen.value = ''
   viewKey.value++
   tab.value = 'dashboard'
 }
 
+// Chọn/chuyển sang một tài khoản đã ghi nhớ (không cần nhập lại mật khẩu).
+async function pickAccount(acct) {
+  error.value = ''
+  try {
+    await ResumeSession(acct.token)
+    await refresh()
+    authScreen.value = ''
+    viewKey.value++
+    tab.value = 'dashboard'
+    menuOpen.value = false
+  } catch {
+    // Token vô hiệu → quên nó, cập nhật lại danh sách.
+    removeToken(acct.token)
+    await loadSavedAccounts()
+    authScreen.value = savedAccounts.value.length ? 'picker' : 'login'
+    error.value = 'Phiên đã hết hạn, vui lòng đăng nhập lại.'
+  }
+}
+
+// "Quên" một tài khoản khỏi máy (xóa phiên đã ghi nhớ, không đụng phiên hiện tại).
+async function forgetAccount(acct) {
+  await ForgetAccount(acct.token)
+  removeToken(acct.token)
+  await loadSavedAccounts()
+  if (authScreen.value === 'picker' && !savedAccounts.value.length) authScreen.value = 'login'
+}
+
+function startAddAccount() {
+  menuOpen.value = false
+  authScreen.value = 'login'
+}
+function cancelAuth() {
+  authScreen.value = loggedIn.value ? '' : savedAccounts.value.length ? 'picker' : 'login'
+}
+
 async function logout() {
-  await Logout()
-  await refresh()
+  // Đăng xuất tài khoản hiện tại: xóa phiên đã ghi nhớ (local + DB) rồi về màn
+  // chọn tài khoản (nếu còn tài khoản khác) hoặc đăng nhập.
+  const token = activeToken.value
+  if (token) removeToken(token)
+  await Logout(token)
+  await loadSavedAccounts()
+  session.value = await GetSession()
+  authScreen.value = savedAccounts.value.length ? 'picker' : 'login'
 }
 
 async function switchWs() {
@@ -115,9 +198,21 @@ async function openTaskFromNotif(n) {
 </script>
 
 <template>
-  <AuthView v-if="!session || !session.userId" @logged-in="onLoggedIn" />
+  <AccountPicker
+    v-if="authScreen === 'picker'"
+    :accounts="savedAccounts"
+    @pick="pickAccount"
+    @remove="forgetAccount"
+    @login="startAddAccount"
+  />
+  <AuthView
+    v-else-if="authScreen === 'login'"
+    :can-cancel="loggedIn || savedAccounts.length > 0"
+    @logged-in="onLoggedIn"
+    @cancel="cancelAuth"
+  />
 
-  <div v-else class="layout">
+  <div v-else-if="loggedIn" class="layout">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-badge">PI</div>
@@ -167,8 +262,17 @@ async function openTaskFromNotif(n) {
           <template v-if="menuOpen">
             <div class="exit-backdrop" @click="menuOpen = false"></div>
             <div class="exit-menu">
+              <template v-if="otherAccounts.length">
+                <div class="exit-label">Chuyển tài khoản</div>
+                <button
+                  v-for="a in otherAccounts" :key="a.token"
+                  class="exit-item" @click="pickAccount(a)"
+                >👤 @{{ a.username }}</button>
+                <div class="exit-sep"></div>
+              </template>
+              <button class="exit-item" @click="startAddAccount">＋ Thêm tài khoản</button>
               <button class="exit-item" @click="checkUpdate">↻ Kiểm tra cập nhật</button>
-              <button class="exit-item" @click="doLogout">⎋ Thoát</button>
+              <button class="exit-item" @click="doLogout">⎋ Đăng xuất</button>
             </div>
           </template>
         </div>

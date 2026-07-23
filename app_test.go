@@ -23,7 +23,8 @@ func testAppDB(t *testing.T) (*App, *gorm.DB) {
 	if err := db.AutoMigrate(&models.Task{}, &models.Settings{},
 		&models.TodoItem{}, &models.Activity{}, &models.StatusChange{},
 		&models.User{}, &models.Workspace{}, &models.WorkspaceMember{},
-		&models.Invitation{}, &models.Notification{}, &models.SavedView{}); err != nil {
+		&models.Invitation{}, &models.Notification{}, &models.SavedView{},
+		&models.Session{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return NewApp(db), db
@@ -67,7 +68,7 @@ func TestAuth(t *testing.T) {
 		t.Fatal("mật khẩu ngắn phải lỗi")
 	}
 
-	app.Logout()
+	app.Logout("")
 	if app.GetSession().UserID != 0 {
 		t.Fatal("logout chưa xóa session")
 	}
@@ -83,6 +84,103 @@ func TestAuth(t *testing.T) {
 	// Chưa chọn workspace → binding task báo lỗi rõ ràng.
 	if _, err := app.ListTasks(); err == nil || !strings.Contains(err.Error(), "workspace") {
 		t.Fatalf("muốn lỗi chưa chọn workspace, nhận: %v", err)
+	}
+}
+
+func TestRememberSession(t *testing.T) {
+	// Bí mật mã hóa theo máy dùng file tạm, không đụng config thật.
+	t.Setenv("PI_SESSION_KEY_FILE", t.TempDir()+"/session.key")
+	app := testApp(t)
+	if _, err := app.Register("son", "secret123"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Ghi nhớ phiên → nhận token đã mã hóa, đăng xuất khỏi bộ nhớ.
+	token, err := app.RememberMe()
+	if err != nil || token == "" {
+		t.Fatalf("RememberMe: token=%q err=%v", token, err)
+	}
+	if !strings.HasPrefix(token, "v1:") {
+		t.Fatalf("token phải được mã hóa (prefix v1:), nhận: %q", token)
+	}
+	app.Logout("") // đăng xuất nhưng KHÔNG xóa token đã ghi nhớ
+	if app.GetSession().UserID != 0 {
+		t.Fatal("logout chưa xóa session bộ nhớ")
+	}
+
+	// Mở lại app: khôi phục phiên từ token.
+	s, err := app.ResumeSession(token)
+	if err != nil || s.UserID == 0 || s.Username != "son" {
+		t.Fatalf("ResumeSession: %+v err=%v", s, err)
+	}
+
+	// Đăng xuất kèm token → xóa phiên, token không dùng lại được.
+	app.Logout(token)
+	if _, err := app.ResumeSession(token); err == nil {
+		t.Fatal("token sau khi Logout phải hết hiệu lực")
+	}
+
+	// Token rác → lỗi.
+	if _, err := app.ResumeSession("khong-ton-tai"); err == nil {
+		t.Fatal("token không hợp lệ phải lỗi")
+	}
+}
+
+func TestMultiAccount(t *testing.T) {
+	t.Setenv("PI_SESSION_KEY_FILE", t.TempDir()+"/session.key")
+	app := testApp(t)
+
+	// Ghi nhớ 2 tài khoản trên cùng một máy.
+	if _, err := app.Register("alice", "secret123"); err != nil {
+		t.Fatalf("register alice: %v", err)
+	}
+	tokA, err := app.RememberMe()
+	if err != nil {
+		t.Fatalf("remember alice: %v", err)
+	}
+	if _, err := app.Register("bob", "secret123"); err != nil { // auto-login bob
+		t.Fatalf("register bob: %v", err)
+	}
+	tokB, err := app.RememberMe()
+	if err != nil {
+		t.Fatalf("remember bob: %v", err)
+	}
+
+	// Liệt kê tài khoản đã ghi nhớ → đủ 2, đúng tên.
+	accts := app.ListSavedAccounts([]string{tokA, tokB})
+	if len(accts) != 2 {
+		t.Fatalf("muốn 2 tài khoản, nhận %d: %+v", len(accts), accts)
+	}
+	names := map[string]bool{accts[0].Username: true, accts[1].Username: true}
+	if !names["alice"] || !names["bob"] {
+		t.Fatalf("thiếu tài khoản: %+v", accts)
+	}
+
+	// Ghi nhớ bob lần nữa → token khác nhưng gộp trùng theo user (vẫn 2).
+	tokB2, err := app.RememberMe()
+	if err != nil {
+		t.Fatalf("remember bob 2: %v", err)
+	}
+	if got := app.ListSavedAccounts([]string{tokA, tokB, tokB2}); len(got) != 2 {
+		t.Fatalf("gộp trùng theo user thất bại, nhận %d", len(got))
+	}
+
+	// Chuyển sang alice bằng token (không cần mật khẩu).
+	if s, err := app.ResumeSession(tokA); err != nil || s.Username != "alice" {
+		t.Fatalf("switch alice: %+v err=%v", s, err)
+	}
+
+	// Quên tài khoản bob → không đụng session alice hiện tại.
+	app.ForgetAccount(tokB)
+	if app.GetSession().Username != "alice" {
+		t.Fatal("ForgetAccount không được đổi session hiện tại")
+	}
+	if got := app.ListSavedAccounts([]string{tokB}); len(got) != 0 {
+		t.Fatalf("token bob đã quên vẫn còn: %+v", got)
+	}
+	// alice vẫn ghi nhớ được.
+	if got := app.ListSavedAccounts([]string{tokA}); len(got) != 1 {
+		t.Fatalf("token alice phải còn hợp lệ, nhận %d", len(got))
 	}
 }
 
@@ -647,7 +745,7 @@ func TestOSNotifications(t *testing.T) {
 	}
 
 	// Logout → reset; đăng nhập lại thì backlog (gồm các tin trên) không bị notify lại.
-	app.Logout()
+	app.Logout("")
 	app.checkNewNotifications()
 	if _, err := app.Login("giang", "secret123"); err != nil {
 		t.Fatalf("login lại: %v", err)

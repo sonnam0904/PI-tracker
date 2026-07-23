@@ -65,6 +65,12 @@ function toggle(path) {
 }
 const isCollapsed = path => collapsed.value.has(path)
 
+// ---- Thu gọn task cha (bug con) ----
+// Dùng chung Set `collapsed` với nhóm, tiền tố 'task:' để không đụng path nhóm.
+const taskKey = id => 'task:' + id
+const toggleTask = id => toggle(taskKey(id))
+const isTaskCollapsed = id => isCollapsed(taskKey(id))
+
 // ---- Danh sách dòng để render ----
 // Có nhóm → header nhóm xen task (phẳng trong nhóm). Không nhóm → giữ logic
 // bug xếp dưới task cha (relatedTaskId).
@@ -87,8 +93,10 @@ const renderItems = computed(() => {
   }
   const out = []
   for (const r of roots) {
-    out.push({ type: 'task', task: r, sub: false, ancestors: [] })
-    for (const b of children.get(r.id) || []) out.push({ type: 'task', task: b, sub: true, ancestors: [] })
+    const kids = children.get(r.id) || []
+    out.push({ type: 'task', task: r, sub: false, ancestors: [], hasChildren: kids.length > 0, childCount: kids.length })
+    if (isTaskCollapsed(r.id)) continue
+    for (const b of kids) out.push({ type: 'task', task: b, sub: true, ancestors: [] })
   }
   return out
 })
@@ -129,7 +137,14 @@ const renderItems = computed(() => {
             <tr v-else :class="{ 'tt-sub': it.sub }" @click="emit('edit', it.task)">
               <td class="tt-title">
                 <span v-if="it.sub" class="tt-sub-arrow">└</span>
+                <button
+                  v-if="it.hasChildren"
+                  class="tt-task-caret"
+                  :title="isTaskCollapsed(it.task.id) ? 'Mở ' + it.childCount + ' task con' : 'Thu gọn task con'"
+                  @click.stop="toggleTask(it.task.id)"
+                >{{ isTaskCollapsed(it.task.id) ? '▸' : '▾' }}</button>
                 {{ it.task.title }}
+                <span v-if="it.hasChildren && isTaskCollapsed(it.task.id)" class="tt-child-count">{{ it.childCount }}</span>
                 <span v-if="isBug(it.task)" class="kb-tag bug" style="margin-left: 6px">
                   🐞{{ it.task.severity ? ' ' + it.task.severity : '' }}
                 </span>

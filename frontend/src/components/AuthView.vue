@@ -1,13 +1,18 @@
 <script setup>
 import { ref } from 'vue'
-import { Login, Register } from '../../wailsjs/go/main/App'
+import { Login, Register, RememberMe } from '../../wailsjs/go/main/App'
+import { addToken } from '../lib/session'
 
-const emit = defineEmits(['logged-in'])
+const props = defineProps({
+  canCancel: { type: Boolean, default: false }, // hiện nút "Quay lại" khi thêm/đổi tài khoản
+})
+const emit = defineEmits(['logged-in', 'cancel'])
 
 const mode = ref('login') // 'login' | 'register'
 const username = ref('')
 const password = ref('')
 const confirm = ref('')
+const remember = ref(true) // "Lưu phiên đăng nhập" — mặc định bật cho tiện
 const error = ref('')
 const busy = ref(false)
 
@@ -25,6 +30,14 @@ async function submit() {
   try {
     const fn = mode.value === 'login' ? Login : Register
     const session = await fn(username.value, password.value)
+    // Ghi nhớ phiên: chỉ lưu token đã mã hóa (opaque) ở local — KHÔNG
+    // username/mật khẩu. Nhiều tài khoản → thêm vào danh sách.
+    if (remember.value) {
+      try {
+        const token = await RememberMe()
+        addToken(token)
+      } catch { /* không chặn đăng nhập nếu ghi nhớ thất bại */ }
+    }
     emit('logged-in', session)
   } catch (e) {
     error.value = String(e)
@@ -70,9 +83,16 @@ function switchMode(m) {
         <input v-model="confirm" type="password" @keyup.enter="submit" />
       </div>
 
+      <label class="auth-remember">
+        <input type="checkbox" v-model="remember" />
+        <span>Lưu phiên đăng nhập (mở app lần sau không cần đăng nhập lại)</span>
+      </label>
+
       <button class="btn primary" style="justify-content: center" :disabled="busy" @click="submit">
         {{ busy ? 'Đang xử lý…' : mode === 'login' ? 'Đăng nhập' : 'Tạo tài khoản' }}
       </button>
+
+      <button v-if="canCancel" class="auth-back" @click="emit('cancel')">← Quay lại chọn tài khoản</button>
     </div>
   </div>
 </template>

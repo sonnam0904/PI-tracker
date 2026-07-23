@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"taskmanager/internal/ai"
+	"taskmanager/internal/machinecrypto"
 	"taskmanager/internal/models"
 	"taskmanager/internal/report"
 	"taskmanager/internal/service"
@@ -330,7 +331,88 @@ func (a *App) setUser(u models.User) (SessionDTO, error) {
 	return a.session(), nil
 }
 
-func (a *App) Logout() {
+// RememberMe tạo phiên "ghi nhớ đăng nhập" cho user hiện tại và trả token đã
+// MÃ HÓA THEO MÁY về cho frontend lưu ở local. Chỉ ciphertext được lưu local —
+// không username/mật khẩu, và ciphertext chỉ giải mã được trên chính máy này.
+// Gọi sau khi Login thành công nếu người dùng tick "Lưu phiên đăng nhập".
+func (a *App) RememberMe() (string, error) {
+	uid, err := a.requireUser()
+	if err != nil {
+		return "", err
+	}
+	token, err := a.auth.CreateSession(uid)
+	if err != nil {
+		return "", err
+	}
+	return machinecrypto.Encrypt(token)
+}
+
+// ResumeSession khôi phục đăng nhập từ token đã lưu local (lúc mở lại app hoặc
+// khi chuyển tài khoản). Giải mã theo máy trước, rồi tra token trong DB. Không
+// giải mã được (token của máy khác), token không hợp lệ/hết hạn → lỗi để
+// frontend xóa token khỏi local.
+func (a *App) ResumeSession(enc string) (SessionDTO, error) {
+	token, err := machinecrypto.Decrypt(enc)
+	if err != nil {
+		return SessionDTO{}, err
+	}
+	u, err := a.auth.ResolveSession(token)
+	if err != nil {
+		return SessionDTO{}, err
+	}
+	return a.setUser(u)
+}
+
+// SavedAccountDTO — một tài khoản đã ghi nhớ trên máy, để hiện màn chọn/chuyển
+// tài khoản. Token là ciphertext theo máy (dùng cho ResumeSession); username
+// được backend giải ra lúc chạy — KHÔNG lưu ở local.
+type SavedAccountDTO struct {
+	Token    string `json:"token"`
+	UserID   uint   `json:"userId"`
+	Username string `json:"username"`
+}
+
+// ListSavedAccounts giải mã & xác thực danh sách token đã lưu local, trả về các
+// tài khoản còn hợp lệ (bỏ token hỏng/hết hạn/của máy khác; gộp trùng theo user
+// — giữ token xuất hiện trước). Frontend dùng để hiện danh sách chọn tài khoản
+// và tự prune lại danh sách token theo kết quả. Không đổi session hiện tại.
+func (a *App) ListSavedAccounts(encTokens []string) []SavedAccountDTO {
+	out := []SavedAccountDTO{}
+	seen := map[uint]bool{}
+	for _, enc := range encTokens {
+		token, err := machinecrypto.Decrypt(enc)
+		if err != nil {
+			continue
+		}
+		u, err := a.auth.ResolveSession(token)
+		if err != nil || seen[u.ID] {
+			continue
+		}
+		seen[u.ID] = true
+		out = append(out, SavedAccountDTO{Token: enc, UserID: u.ID, Username: u.Username})
+	}
+	return out
+}
+
+// ForgetAccount xóa MỘT tài khoản đã ghi nhớ theo token, KHÔNG đụng tới session
+// đang đăng nhập (dùng khi "quên" một tài khoản khác trong danh sách).
+func (a *App) ForgetAccount(enc string) {
+	if enc == "" {
+		return
+	}
+	if token, err := machinecrypto.Decrypt(enc); err == nil {
+		a.auth.DeleteSession(token)
+	}
+}
+
+// Logout đăng xuất session trong bộ nhớ và xóa phiên đã ghi nhớ (nếu có token
+// đã mã hóa theo máy). Token giải mã được thì xóa đúng bản ghi trong DB.
+func (a *App) Logout(enc string) {
+	if enc != "" {
+		if token, err := machinecrypto.Decrypt(enc); err == nil {
+			a.auth.DeleteSession(token)
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.userID, a.username, a.wsID, a.wsName, a.wsRole = 0, "", 0, "", ""

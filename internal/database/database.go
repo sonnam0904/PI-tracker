@@ -59,7 +59,8 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	if err := db.AutoMigrate(&models.Task{}, &models.Settings{},
 		&models.TodoItem{}, &models.Activity{}, &models.StatusChange{},
 		&models.User{}, &models.Workspace{}, &models.WorkspaceMember{},
-		&models.Invitation{}, &models.Notification{}, &models.SavedView{}); err != nil {
+		&models.Invitation{}, &models.Notification{}, &models.SavedView{},
+		&models.Session{}); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return db, nil

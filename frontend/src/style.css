@@ -81,6 +81,12 @@ input, textarea { user-select: text; }
   padding: 28px;
   display: flex; flex-direction: column; gap: 14px;
 }
+.auth-remember {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--text-faint); cursor: pointer;
+  user-select: none;
+}
+.auth-remember input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); }
 
 /* ===== Workspace box (sidebar) ===== */
 .ws-box {
@@ -163,6 +169,31 @@ input, textarea { user-select: text; }
   white-space: nowrap;
 }
 .exit-item:hover { background: var(--panel-2); }
+.exit-label { padding: 6px 10px 2px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
+.exit-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
+/* ===== Chọn / thêm tài khoản (đa tài khoản) ===== */
+.acct-list { display: flex; flex-direction: column; gap: 6px; }
+.acct-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg);
+  cursor: pointer;
+}
+.acct-row:hover { background: var(--panel-2); border-color: var(--accent); }
+.acct-row .avatar { width: 30px; height: 30px; font-size: 12px; }
+.acct-name { flex: 1; font-weight: 600; font-size: 14px; }
+.acct-remove {
+  border: none; background: transparent; color: var(--text-faint);
+  font-size: 18px; line-height: 1; width: 24px; height: 24px; border-radius: 6px;
+  cursor: pointer;
+}
+.acct-remove:hover { background: var(--red); color: #fff; }
+.auth-back {
+  background: transparent; border: none; color: var(--text-faint);
+  font-size: 12.5px; cursor: pointer; padding: 4px; align-self: center;
+}
+.auth-back:hover { color: var(--text); text-decoration: underline; }
 
 /* ===== Notification bell ===== */
 .bell-wrap { position: relative; }
@@ -1080,6 +1111,20 @@ input, textarea { user-select: text; }
 .tt-sub .tt-title { padding-left: 26px; }
 .tt-sub-arrow { color: var(--text-faint); margin-right: 4px; font-weight: 400; }
 .tt-sub td { background: rgba(248, 81, 73, 0.03); }
+
+/* Caret thu gọn task cha (giống Lark) */
+.tt-task-caret {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-right: 4px; padding: 0;
+  border: none; border-radius: 4px; background: transparent;
+  color: var(--text-faint); font-size: 11px; line-height: 1; cursor: pointer;
+  vertical-align: middle;
+}
+.tt-task-caret:hover { background: var(--border-soft); color: var(--text); }
+.tt-child-count {
+  margin-left: 8px; background: var(--bg); border: 1px solid var(--border-soft);
+  border-radius: 999px; padding: 0 8px; font-size: 11px; color: var(--text-faint); font-weight: 600;
+}
 
 /* Bar bug trên Gantt: sọc chéo đỏ nhạt đè lên màu nhân sự */
 .g-bar.bug {

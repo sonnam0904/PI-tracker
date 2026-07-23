@@ -8,3 +8,5 @@ frontend/wailsjs/
 .codegraph/
 openwiki/
 build/
+*.md
+!README.md

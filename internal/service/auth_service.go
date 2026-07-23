@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 	"gorm.io/gorm"
@@ -85,6 +86,63 @@ func (s *AuthService) Get(id uint) (models.User, error) {
 	var u models.User
 	err := s.db.First(&u, id).Error
 	return u, err
+}
+
+// sessionTTL — thời hạn của một phiên "ghi nhớ đăng nhập". Mỗi lần khôi phục
+// thành công sẽ gia hạn (sliding window) nên người dùng thường xuyên không bị
+// đăng xuất.
+const sessionTTL = 30 * 24 * time.Hour
+
+// CreateSession sinh token ngẫu nhiên cho user và lưu vào DB. Trả về token để
+// client lưu ở local máy (KHÔNG lưu username/mật khẩu).
+func (s *AuthService) CreateSession(userID uint) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	now := time.Now()
+	sess := models.Session{Token: token, UserID: userID, CreatedAt: now, ExpiresAt: now.Add(sessionTTL)}
+	if err := s.db.Create(&sess).Error; err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// ResolveSession đổi token thành user. Token không tồn tại/đã hết hạn → lỗi
+// (đồng thời xóa bản ghi hết hạn). Token hợp lệ thì gia hạn thêm sessionTTL.
+func (s *AuthService) ResolveSession(token string) (models.User, error) {
+	if token == "" {
+		return models.User{}, fmt.Errorf("thiếu token phiên")
+	}
+	var sess models.Session
+	err := s.db.Where("token = ?", token).First(&sess).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.User{}, fmt.Errorf("phiên không hợp lệ")
+	}
+	if err != nil {
+		return models.User{}, err
+	}
+	if time.Now().After(sess.ExpiresAt) {
+		s.db.Where("token = ?", token).Delete(&models.Session{})
+		return models.User{}, fmt.Errorf("phiên đã hết hạn")
+	}
+	var u models.User
+	if err := s.db.First(&u, sess.UserID).Error; err != nil {
+		return models.User{}, fmt.Errorf("phiên không hợp lệ")
+	}
+	// Gia hạn sliding window; lỗi cập nhật không chặn đăng nhập.
+	s.db.Model(&models.Session{}).Where("token = ?", token).
+		Update("expires_at", time.Now().Add(sessionTTL))
+	return u, nil
+}
+
+// DeleteSession xóa phiên đã lưu (khi người dùng đăng xuất).
+func (s *AuthService) DeleteSession(token string) {
+	if token == "" {
+		return
+	}
+	s.db.Where("token = ?", token).Delete(&models.Session{})
 }
 
 // hashPassword băm Argon2id, mã hóa theo chuẩn PHC string.
