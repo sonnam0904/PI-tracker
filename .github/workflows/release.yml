@@ -96,7 +96,12 @@ jobs:
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent build/bin/task-manager.app "${{ matrix.asset }}"
+        run: |
+          # Wails đặt tên .app theo "name" trong wails.json, không chắc trùng
+          # outputfilename — dò bundle thực tế thay vì hardcode.
+          app=$(ls -d build/bin/*.app | head -n1)
+          echo "Đóng gói: $app"
+          ditto -c -k --keepParent "$app" "${{ matrix.asset }}"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
