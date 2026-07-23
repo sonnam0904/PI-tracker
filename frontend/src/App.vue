@@ -57,7 +57,9 @@ async function refresh() {
   try {
     session.value = await GetSession()
     if (session.value.userId) {
-      workspaces.value = await ListWorkspaces()
+      // ListWorkspaces trả null khi user chưa thuộc workspace nào (nil slice →
+      // JSON null); ép về [] để template dùng workspaces.length không nổ.
+      workspaces.value = (await ListWorkspaces()) || []
       curWs.value = session.value.workspaceId
     } else {
       workspaces.value = []

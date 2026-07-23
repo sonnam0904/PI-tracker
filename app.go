@@ -427,7 +427,16 @@ func (a *App) ListWorkspaces() ([]service.WorkspaceInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.workspaces.ListForUser(uid)
+	list, err := a.workspaces.ListForUser(uid)
+	if err != nil {
+		return nil, err
+	}
+	if list == nil {
+		// User chưa thuộc workspace nào: trả mảng rỗng thay vì nil để JSON là
+		// [] (không phải null) — frontend đọc .length khỏi nổ.
+		list = []service.WorkspaceInfo{}
+	}
+	return list, nil
 }
 
 // CreateWorkspace tạo và chuyển sang workspace mới.
