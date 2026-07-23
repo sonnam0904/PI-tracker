@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 # Cần quyền ghi để semantic-release tạo tag/release và commit changelog.
 permissions:
