@@ -1,8 +1,9 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetSession, Logout, ListWorkspaces, SelectWorkspace, CreateWorkspace } from '../wailsjs/go/main/App'
+import { GetSession, Logout, ListWorkspaces, SelectWorkspace, CreateWorkspace, AppVersion } from '../wailsjs/go/main/App'
 import AuthView from './components/AuthView.vue'
 import NotificationBell from './components/NotificationBell.vue'
+import UpdateBanner from './components/UpdateBanner.vue'
 import Dashboard from './components/Dashboard.vue'
 import GanttView from './components/GanttView.vue'
 import TeamView from './components/TeamView.vue'
@@ -22,6 +23,7 @@ const curWs = ref(0)
 const newWsName = ref('')
 const error = ref('')
 const viewKey = ref(0) // đổi workspace → remount views để nạp lại dữ liệu
+const version = ref('') // phiên bản app đang chạy, hiện ở sidebar
 
 async function refresh() {
   error.value = ''
@@ -38,6 +40,13 @@ async function refresh() {
   }
 }
 onMounted(refresh)
+onMounted(async () => {
+  try {
+    version.value = await AppVersion()
+  } catch {
+    version.value = ''
+  }
+})
 
 async function onLoggedIn() {
   await refresh()
@@ -129,6 +138,11 @@ async function openTaskFromNotif(n) {
 
       <div style="flex: 1"></div>
 
+      <!-- Phiên bản app đang chạy -->
+      <div v-if="version" class="app-version" title="Phiên bản đang chạy">
+        {{ version === 'dev' ? 'dev build' : 'v' + version }}
+      </div>
+
       <!-- User + chuông + đăng xuất -->
       <div class="user-box">
         <NotificationBell
@@ -142,6 +156,7 @@ async function openTaskFromNotif(n) {
     </aside>
 
     <main class="main" :key="viewKey">
+      <UpdateBanner />
       <div v-if="error" class="err">{{ error }}</div>
 
       <template v-if="session.workspaceId">

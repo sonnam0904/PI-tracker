@@ -15,6 +15,11 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// Version là phiên bản app, nhúng lúc build qua ldflags:
+//   wails build -ldflags "-X main.Version=1.2.3"
+// Bản dev để "dev" — updater sẽ bỏ qua việc kiểm tra khi ở giá trị này.
+var Version = "dev"
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -26,6 +31,7 @@ func main() {
 	}
 
 	app := NewApp(db)
+	app.version = Version
 
 	err = wails.Run(&options.App{
 		Title:  "PI Tracker",

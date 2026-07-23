@@ -39,6 +39,9 @@ type App struct {
 	savedViews    *service.SavedViewService
 	estimator     *ai.Estimator
 
+	// version — phiên bản app nhúng lúc build (main.Version), dùng cho updater.
+	version string
+
 	// Session trong bộ nhớ: đăng nhập lại mỗi lần mở app.
 	mu       sync.Mutex
 	userID   uint

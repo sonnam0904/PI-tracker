@@ -88,7 +88,9 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Build
-        run: wails build -platform ${{ matrix.platform }} ${{ matrix.wails_flags }}
+        # Nhúng version (từ semantic-release) vào biến main.Version để updater
+        # biết phiên bản đang chạy mà so với GitHub Releases.
+        run: wails build -platform ${{ matrix.platform }} ${{ matrix.wails_flags }} -ldflags "-X main.Version=${{ needs.release.outputs.version }}"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

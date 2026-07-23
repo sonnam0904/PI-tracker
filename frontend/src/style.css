@@ -118,6 +118,12 @@ input, textarea { user-select: text; }
 .ws-new input:focus { border-color: var(--accent); }
 
 /* ===== User box (sidebar footer) ===== */
+.app-version {
+  padding: 2px 6px 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
 .user-box {
   display: flex; align-items: center; gap: 8px;
   padding: 12px 6px 2px;
