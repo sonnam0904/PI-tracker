@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/sonnam0904/PI-tracker/compare/v1.3.0...v1.4.0) (2026-07-23)
+
+
+### Features
+
+* implement task dependencies functionality ([972dd38](https://github.com/sonnam0904/PI-tracker/commit/972dd3834614fc2c10c0a1f770790b447b609397))
+
 # [1.3.0](https://github.com/sonnam0904/PI-tracker/compare/v1.2.0...v1.3.0) (2026-07-23)
 
 
