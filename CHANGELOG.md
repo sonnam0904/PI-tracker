@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/sonnam0904/PI-tracker/compare/v1.0.0...v1.1.0) (2026-07-23)
+
+
+### Features
+
+* implement application update functionality ([b973410](https://github.com/sonnam0904/PI-tracker/commit/b97341017ddc1e1357925ae601c8e949c6303dd0))
+
 # 1.0.0 (2026-07-23)
 
 
