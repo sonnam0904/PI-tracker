@@ -1,6 +1,6 @@
 # Task Manager — PI Tracker
 
-> Ứng dụng desktop quản lý task cho team dev và theo dõi **Performance Index (PI)** theo tháng.
+> Ứng dụng desktop quản lý task cho team dev và theo dõi **Performance Index (PI)** theo tháng. 
 
 ---
 
@@ -9,7 +9,6 @@
 ### Cách 1 — Tải bản build sẵn (khuyến nghị)
 
 Tải file thực thi mới nhất cho hệ điều hành của bạn tại trang Release
-
 
 Giải nén và chạy. Đặt file `.env` cùng thư mục với app để cấu hình DB / AI (xem [Cấu hình](#️-cấu-hình-env)). Mặc định dùng SQLite nên chạy được ngay không cần server DB.
 
