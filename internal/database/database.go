@@ -60,7 +60,7 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		&models.TodoItem{}, &models.Activity{}, &models.StatusChange{},
 		&models.User{}, &models.Workspace{}, &models.WorkspaceMember{},
 		&models.Invitation{}, &models.Notification{}, &models.SavedView{},
-		&models.Session{}); err != nil {
+		&models.Session{}, &models.TaskDependency{}); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return db, nil

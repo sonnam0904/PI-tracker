@@ -38,6 +38,7 @@ type App struct {
 	workspaces    *service.WorkspaceService
 	notifications *service.NotificationService
 	savedViews    *service.SavedViewService
+	dependencies  *service.DependencyService
 	estimator     *ai.Estimator
 
 	// version — phiên bản app nhúng lúc build (main.Version), dùng cho updater.
@@ -74,6 +75,7 @@ func NewApp(db *gorm.DB) *App {
 		auth:          service.NewAuthService(db),
 		notifications: service.NewNotificationService(db),
 		savedViews:    service.NewSavedViewService(db),
+		dependencies:  service.NewDependencyService(db),
 		// Gợi ý estimate bằng LLM — cấu hình qua .env (AI_PROVIDER/AI_API_KEY/
 		// AI_MODEL). Chưa cấu hình thì estimator vẫn tồn tại nhưng Enabled()=false.
 		estimator: ai.NewEstimator(ai.NewClient(ai.Load())),
@@ -625,6 +627,9 @@ type TaskDTO struct {
 	Severity      string `json:"severity"`      // Critical | Major | Minor | ""
 	Resolution    string `json:"resolution"`    // Fixed | Won't Fix | Cannot Reproduce | Duplicate | ""
 	RelatedTaskID uint   `json:"relatedTaskId"` // task gốc sinh bug, 0 = không liên kết
+	// DependsOn: các task phải hoàn thành trước task này (finish-to-start).
+	// Đổ khi ListTasks để vẽ mũi tên Gantt; nhận lại khi SaveTask để lưu.
+	DependsOn []uint `json:"dependsOn"`
 	// Checklist progress (chỉ đổ khi ListTasks, phục vụ badge trên board).
 	TodoTotal int `json:"todoTotal"`
 	TodoDone  int `json:"todoDone"`
@@ -704,12 +709,17 @@ func (a *App) ListTasks() ([]TaskDTO, error) {
 	if err != nil {
 		return nil, err
 	}
+	deps, err := a.dependencies.DependsOnMap(wsID)
+	if err != nil {
+		return nil, err
+	}
 	dtos := make([]TaskDTO, len(tasks))
 	for i, t := range tasks {
 		dtos[i] = taskToDTO(t)
 		if c, ok := counts[t.ID]; ok {
 			dtos[i].TodoTotal, dtos[i].TodoDone = c[0], c[1]
 		}
+		dtos[i].DependsOn = deps[t.ID]
 	}
 	return dtos, nil
 }
@@ -857,6 +867,33 @@ func (a *App) SaveTask(dto TaskDTO) error {
 			t.DoneDate.Format(dateLayout), t.StartDate.Format(dateLayout))
 	}
 
+	// Phụ thuộc (finish-to-start): các task phải xong trước task này. Khử 0/
+	// trùng/chính-nó, xác nhận tồn tại trong workspace, và chặn vòng lặp NGAY
+	// để không lưu task rồi mới báo lỗi. Task mới (ID==0) chưa tồn tại nên
+	// không thể nằm trong vòng — bỏ qua bước cycle, chỉ kiểm tra tồn tại.
+	depIDs := make([]uint, 0, len(dto.DependsOn))
+	seenDep := make(map[uint]bool)
+	for _, id := range dto.DependsOn {
+		if id == 0 || id == dto.ID || seenDep[id] {
+			continue
+		}
+		seenDep[id] = true
+		dep, err := a.tasks.Get(id)
+		if err != nil || dep.WorkspaceID != wsID {
+			return fmt.Errorf("không tìm thấy task phụ thuộc id %d trong workspace hiện tại", id)
+		}
+		depIDs = append(depIDs, id)
+	}
+	if dto.ID != 0 {
+		cyc, err := a.dependencies.WouldCycle(wsID, dto.ID, depIDs)
+		if err != nil {
+			return err
+		}
+		if cyc {
+			return fmt.Errorf("phụ thuộc tạo thành vòng lặp — task không thể (gián tiếp) chờ chính nó")
+		}
+	}
+
 	// Lấy bản cũ trước khi lưu để ghi lịch sử thay đổi (và xác nhận quyền).
 	var old *models.Task
 	if t.ID != 0 {
@@ -888,6 +925,14 @@ func (a *App) SaveTask(dto TaskDTO) error {
 		return err
 	}
 
+	// Lưu phụ thuộc sau khi có t.ID (task mới): đọc bản cũ để ghi lịch sử, rồi
+	// thay bằng danh sách mới. Cycle đã kiểm tra ở trên; SetForTask kiểm lại
+	// (phòng thủ) và ghi trong transaction.
+	oldDeps, _ := a.dependencies.PredecessorsOf(t.ID)
+	if err := a.dependencies.SetForTask(wsID, t.ID, depIDs); err != nil {
+		return err
+	}
+
 	names, _ := a.workspaces.MemberNames(wsID)
 	if old == nil {
 		_ = a.activities.Log(t.ID, a.actorName(), "create", "tạo task")
@@ -911,6 +956,9 @@ func (a *App) SaveTask(dto TaskDTO) error {
 	}
 	if autoBlockedNote != "" {
 		_ = a.activities.Log(t.ID, a.actorName(), "update", autoBlockedNote)
+	}
+	if note := depChangeNote(oldDeps, depIDs); note != "" {
+		_ = a.activities.Log(t.ID, a.actorName(), "update", note)
 	}
 	// Đặt/đổi hạn chót có hiệu lực ngay: quét nhắc việc luôn thay vì bắt
 	// người dùng đợi nhịp quét theo giờ (task đã nhắc rồi không nhắc lại).
@@ -997,7 +1045,41 @@ func (a *App) DeleteTask(id uint) error {
 	_ = a.todos.DeleteForTask(id)
 	_ = a.activities.DeleteForTask(id)
 	_ = a.statuses.DeleteForTask(id)
+	_ = a.dependencies.DeleteForTask(id)
 	return nil
+}
+
+// depChangeNote trả về dòng lịch sử "Phụ thuộc: cũ → mới" khi danh sách
+// predecessor thay đổi, hoặc "" nếu không đổi. So sánh theo tập (không phụ
+// thuộc thứ tự) vì cả hai đầu vào đều đã sắp xếp/khử trùng.
+func depChangeNote(old, new []uint) string {
+	refs := func(ids []uint) string {
+		if len(ids) == 0 {
+			return "—"
+		}
+		parts := make([]string, len(ids))
+		for i, id := range ids {
+			parts[i] = fmt.Sprintf("#%d", id)
+		}
+		return strings.Join(parts, ", ")
+	}
+	if len(old) == len(new) {
+		set := make(map[uint]bool, len(old))
+		for _, id := range old {
+			set[id] = true
+		}
+		same := true
+		for _, id := range new {
+			if !set[id] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return ""
+		}
+	}
+	return fmt.Sprintf("Phụ thuộc: %s → %s", refs(old), refs(new))
 }
 
 // taskChanges liệt kê khác biệt giữa 2 bản task, dạng "Trường: cũ → mới".

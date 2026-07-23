@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import {
   ListTasks, ListPeople, ListSavedViews, CreateSavedView, UpdateSavedView, DeleteSavedView,
 } from '../../wailsjs/go/main/App'
@@ -123,8 +123,12 @@ function maybeOpenRequested() {
 onMounted(async () => {
   await load()
   maybeOpenRequested()
+  await nextTick()
+  measureHead()
 })
 watch(() => props.openTaskId, maybeOpenRequested)
+// Header chỉ tồn tại khi ở Timeline — đo lại khi chuyển về view này.
+watch(view, v => { if (v === 'timeline') nextTick(measureHead) })
 
 function shift(n) {
   month.value = n === 0 ? monthStart(new Date()) : addMonths(month.value, n)
@@ -183,13 +187,64 @@ function onHeaderSort(field) {
   }
 }
 
-function barStyle(t) {
+// barBox: vị trí bar (px, số) trong track — dùng chung cho style bar và toạ độ
+// mũi tên phụ thuộc. null khi task chưa có Start date (không vẽ được bar).
+function barBox(t) {
   const s = parseISODate(t.startDate)
   if (!s) return null
-  let from = Math.max(daysBetween(mStart.value, s), 0)
-  let to = Math.min(daysBetween(mStart.value, barEnd(t)), days.value)
+  const from = Math.max(daysBetween(mStart.value, s), 0)
+  const to = Math.min(daysBetween(mStart.value, barEnd(t)), days.value)
   const width = Math.max((to - from) * DAY_W, DAY_W / 2)
-  return { left: from * DAY_W + 'px', width: width + 'px', background: colorOf(t) }
+  return { left: from * DAY_W, width }
+}
+
+function barStyle(t) {
+  const b = barBox(t)
+  if (!b) return null
+  return { left: b.left + 'px', width: b.width + 'px', background: colorOf(t) }
+}
+
+// ---- Mũi tên phụ thuộc (finish-to-start): predecessor → task ----
+// Đo chiều cao header một lần (CSS quyết định, không cố định) để canh trục Y.
+const headEl = ref(null)
+const headH = ref(28)
+function measureHead() {
+  if (headEl.value) headH.value = headEl.value.offsetHeight
+}
+
+// SVG phủ toàn bộ .gantt: cao = header + số hàng × ROW_H.
+const overlayH = computed(() => headH.value + filteredRows.value.length * ROW_H)
+
+// Mỗi cạnh nối cạnh phải bar của predecessor tới cạnh trái bar của task này;
+// chỉ vẽ khi cả hai bar cùng hiển thị (có Start date & lọt bộ lọc tháng).
+const depLines = computed(() => {
+  const idx = new Map()
+  filteredRows.value.forEach((t, i) => idx.set(t.id, i))
+  const lines = []
+  filteredRows.value.forEach((t, i) => {
+    const succ = barBox(t)
+    if (!succ) return
+    for (const pid of t.dependsOn || []) {
+      if (!idx.has(pid)) continue
+      const pi = idx.get(pid)
+      const pred = barBox(filteredRows.value[pi])
+      if (!pred) continue
+      lines.push({
+        key: `${pid}-${t.id}`,
+        x1: LABEL_W + pred.left + pred.width,
+        y1: headH.value + pi * ROW_H + ROW_H / 2,
+        x2: LABEL_W + succ.left,
+        y2: headH.value + i * ROW_H + ROW_H / 2,
+      })
+    }
+  })
+  return lines
+})
+
+// Đường cong finish-to-start: bezier ngang mềm, thò ra một đoạn để tách khỏi bar.
+function depPath(l) {
+  const off = Math.max(14, Math.min(28, Math.abs(l.x2 - l.x1) / 2))
+  return `M ${l.x1} ${l.y1} C ${l.x1 + off} ${l.y1}, ${l.x2 - off} ${l.y2}, ${l.x2} ${l.y2}`
 }
 
 function dayMeta(i) {
@@ -225,7 +280,7 @@ function onSaved() {
             <span class="dot" :style="{ background: personMeta[p.ID].color }"></span>{{ p.Name }}
           </span>
           <span><span class="dot" :style="{ background: UNASSIGNED_COLOR }"></span>Chưa gán</span>
-          <span class="hint" v-if="view === 'timeline'">· nét đứt = dự kiến theo estimate AI</span>
+          <span class="hint" v-if="view === 'timeline'">· nét đứt = dự kiến theo estimate AI · mũi tên = phụ thuộc</span>
         </div>
       </div>
       <div class="month-nav">
@@ -261,7 +316,7 @@ function onSaved() {
     <!-- Timeline -->
     <div v-if="view === 'timeline'" class="gantt-wrap">
       <div class="gantt" :style="{ minWidth: LABEL_W + trackW + 'px' }">
-        <div class="gantt-head">
+        <div class="gantt-head" ref="headEl">
           <div class="corner" :style="{ width: LABEL_W + 'px' }">Task · Nhân sự</div>
           <div
             v-for="i in days" :key="i"
@@ -313,6 +368,29 @@ function onSaved() {
             <span v-else class="g-nostart">(chưa có Start date)</span>
           </div>
         </div>
+
+        <!-- Mũi tên phụ thuộc: phủ toàn track, không chắn click vào bar/label -->
+        <svg
+          v-if="depLines.length"
+          class="g-deps"
+          :width="LABEL_W + trackW" :height="overlayH"
+          :style="{ width: LABEL_W + trackW + 'px', height: overlayH + 'px' }"
+        >
+          <defs>
+            <marker
+              id="dep-arrow" markerWidth="7" markerHeight="7"
+              refX="5.5" refY="3" orient="auto" markerUnits="userSpaceOnUse"
+            >
+              <path d="M0,0 L6,3 L0,6 Z" fill="var(--accent, #6d4aff)" />
+            </marker>
+          </defs>
+          <path
+            v-for="l in depLines" :key="l.key"
+            :d="depPath(l)"
+            class="dep-edge"
+            marker-end="url(#dep-arrow)"
+          />
+        </svg>
       </div>
     </div>
 

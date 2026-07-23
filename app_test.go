@@ -24,7 +24,7 @@ func testAppDB(t *testing.T) (*App, *gorm.DB) {
 		&models.TodoItem{}, &models.Activity{}, &models.StatusChange{},
 		&models.User{}, &models.Workspace{}, &models.WorkspaceMember{},
 		&models.Invitation{}, &models.Notification{}, &models.SavedView{},
-		&models.Session{}); err != nil {
+		&models.Session{}, &models.TaskDependency{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return NewApp(db), db
@@ -1334,5 +1334,66 @@ func TestSavedViews(t *testing.T) {
 	views, _ = app.ListSavedViews()
 	if len(views) != 1 || views[0].ID != v2.ID {
 		t.Fatalf("sau xóa còn: %+v", views)
+	}
+}
+
+// Phụ thuộc task: lưu được, ListTasks trả về DependsOn, chặn vòng lặp, và
+// xóa task thì cạnh phụ thuộc cũng biến mất.
+func TestTaskDependencies(t *testing.T) {
+	app := testApp(t)
+	loginApp(t, app, "alice")
+
+	// Tạo 3 task A, B, C.
+	mk := func(title string) uint {
+		if err := app.SaveTask(TaskDTO{Title: title, Status: "Todo"}); err != nil {
+			t.Fatalf("tạo %s: %v", title, err)
+		}
+		list, _ := app.ListTasks()
+		return list[0].ID // List sắp xếp created_at DESC → mới nhất đầu
+	}
+	a := mk("A")
+	b := mk("B")
+	c := mk("C")
+
+	// B phụ thuộc A; C phụ thuộc A và B.
+	if err := app.SaveTask(TaskDTO{ID: b, Title: "B", Status: "Todo", DependsOn: []uint{a}}); err != nil {
+		t.Fatalf("B depends A: %v", err)
+	}
+	if err := app.SaveTask(TaskDTO{ID: c, Title: "C", Status: "Todo", DependsOn: []uint{a, b}}); err != nil {
+		t.Fatalf("C depends A,B: %v", err)
+	}
+	if got := findTask(t, app, c).DependsOn; len(got) != 2 {
+		t.Fatalf("C.DependsOn = %v, want 2 phần tử", got)
+	}
+
+	// Tự phụ thuộc → bỏ qua (không lỗi, không lưu).
+	if err := app.SaveTask(TaskDTO{ID: b, Title: "B", Status: "Todo", DependsOn: []uint{b, a}}); err != nil {
+		t.Fatalf("B self-dep: %v", err)
+	}
+	if got := findTask(t, app, b).DependsOn; len(got) != 1 || got[0] != a {
+		t.Fatalf("B.DependsOn = %v, want [%d]", got, a)
+	}
+
+	// Vòng lặp: A phụ thuộc C (C→B→A→C) phải bị từ chối.
+	if err := app.SaveTask(TaskDTO{ID: a, Title: "A", Status: "Todo", DependsOn: []uint{c}}); err == nil ||
+		!strings.Contains(err.Error(), "vòng lặp") {
+		t.Fatalf("muốn lỗi vòng lặp, nhận: %v", err)
+	}
+
+	// Task phụ thuộc không tồn tại/khác workspace → lỗi.
+	if err := app.SaveTask(TaskDTO{ID: b, Title: "B", Status: "Todo", DependsOn: []uint{9999}}); err == nil ||
+		!strings.Contains(err.Error(), "task phụ thuộc") {
+		t.Fatalf("muốn lỗi task không tồn tại, nhận: %v", err)
+	}
+
+	// Xóa A → cạnh phụ thuộc của B và C tới A biến mất.
+	if err := app.DeleteTask(a); err != nil {
+		t.Fatalf("xóa A: %v", err)
+	}
+	if got := findTask(t, app, c).DependsOn; len(got) != 1 || got[0] != b {
+		t.Fatalf("sau xóa A, C.DependsOn = %v, want [%d]", got, b)
+	}
+	if got := findTask(t, app, b).DependsOn; len(got) != 0 {
+		t.Fatalf("sau xóa A, B.DependsOn = %v, want rỗng", got)
 	}
 }

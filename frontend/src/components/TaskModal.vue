@@ -58,7 +58,11 @@ const form = reactive(props.task
       severity: '',
       resolution: '',
       relatedTaskId: 0,
+      dependsOn: [],
     })
+
+// Tách bản sao mảng phụ thuộc để sửa trong modal không đụng vào prop gốc.
+form.dependsOn = Array.isArray(form.dependsOn) ? [...form.dependsOn] : []
 
 // ---- Gợi ý estimate bằng AI ----
 const ai = reactive({ enabled: false, provider: '', model: '' })
@@ -124,6 +128,24 @@ function removeAiTodo(i) {
 const isBug = computed(() => form.type === TYPE_BUG)
 // Task khác (không phải chính bug này) để chọn làm task gốc.
 const relatable = computed(() => props.tasks.filter(t => t.id !== form.id))
+
+// ---- Phụ thuộc (finish-to-start): task phải xong trước task này ----
+// Ứng viên = task khác chưa được chọn (chặn vòng lặp do backend lo).
+const depCandidates = computed(() =>
+  props.tasks.filter(t => t.id !== form.id && !form.dependsOn.includes(t.id))
+)
+function depTitle(id) {
+  const t = props.tasks.find(x => x.id === id)
+  return t ? `#${t.id} · ${t.title}` : `#${id}`
+}
+function addDep(e) {
+  const id = Number(e.target.value)
+  if (id && !form.dependsOn.includes(id)) form.dependsOn.push(id)
+  e.target.value = ''
+}
+function removeDep(id) {
+  form.dependsOn = form.dependsOn.filter(x => x !== id)
+}
 
 const BUG_TEMPLATE = `## Các bước tái hiện
 1.
@@ -377,6 +399,7 @@ async function save() {
       blockedDays: Number(form.blockedDays) || 0,
       reporterId: Number(form.reporterId) || 0,
       relatedTaskId: Number(form.relatedTaskId) || 0,
+      dependsOn: (form.dependsOn || []).map(Number),
       // Checklist AI gợi ý chỉ áp khi tạo mới; task đang sửa đã thêm todo trực tiếp.
       initialTodos: form.id ? [] : aiChecklist.value,
     })
@@ -600,6 +623,21 @@ async function doDelete() {
               <label>Thời gian blocked (ngày)</label>
               <input v-model="form.blockedDays" type="number" min="0" step="0.5" />
             </div>
+
+            <div class="field full">
+              <label>Phụ thuộc — task phải xong trước (finish-to-start)</label>
+              <div v-if="form.dependsOn.length" class="dep-chips">
+                <span v-for="id in form.dependsOn" :key="id" class="dep-chip">
+                  {{ depTitle(id) }}
+                  <button type="button" class="dep-del" title="Bỏ phụ thuộc" @click="removeDep(id)">✕</button>
+                </span>
+              </div>
+              <select :disabled="!depCandidates.length" @change="addDep">
+                <option value="">+ Thêm task phải xong trước…</option>
+                <option v-for="t in depCandidates" :key="t.id" :value="t.id">#{{ t.id }} · {{ t.title }}</option>
+              </select>
+              <span class="hint">Timeline sẽ vẽ mũi tên từ mỗi task phải xong trước → task này.</span>
+            </div>
           </div>
 
           <!-- Cột phải: checklist + bình luận & hoạt động (chỉ khi sửa) -->
@@ -761,4 +799,22 @@ async function doDelete() {
   cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 4px;
 }
 .ai-ck-del:hover { color: #ff6b6b; }
+
+/* Phụ thuộc: chip task đã chọn + nút bỏ */
+.dep-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.dep-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%;
+  background: var(--accent-soft, rgba(109, 74, 255, 0.14));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 6px 2px 10px;
+  font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dep-del {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim, #888); font-size: 12px; line-height: 1; padding: 2px;
+}
+.dep-del:hover { color: #ff6b6b; }
 </style>

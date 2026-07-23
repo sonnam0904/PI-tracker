@@ -663,6 +663,19 @@ input, textarea { user-select: text; }
   position: absolute; top: 0; bottom: 0; width: 2px;
   background: var(--red); opacity: .75; z-index: 4; pointer-events: none;
 }
+/* Overlay mũi tên phụ thuộc: phủ từ góc .gantt, không chắn tương tác.
+   z thấp hơn cột nhãn/header (sticky, z5-7) nên khi cuộn ngang mũi tên
+   chui gọn dưới cột nhãn. */
+.g-deps {
+  position: absolute; top: 0; left: 0;
+  pointer-events: none; overflow: visible; z-index: 3;
+}
+.dep-edge {
+  fill: none;
+  stroke: var(--accent, #6d4aff);
+  stroke-width: 1.6;
+  opacity: .75;
+}
 
 .legend { display: flex; gap: 16px; align-items: center; font-size: 12.5px; color: var(--text-dim); flex-wrap: wrap; }
 .legend .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 6px; vertical-align: -1px; }
