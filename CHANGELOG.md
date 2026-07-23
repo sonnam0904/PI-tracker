@@ -1,3 +1,10 @@
+## [1.4.1](https://github.com/sonnam0904/PI-tracker/compare/v1.4.0...v1.4.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* handle empty workspace list for users without workspaces ([7f12ab3](https://github.com/sonnam0904/PI-tracker/commit/7f12ab3b160583b8ebbe5dfe72f7619a95f9e4e0))
+
 # [1.4.0](https://github.com/sonnam0904/PI-tracker/compare/v1.3.0...v1.4.0) (2026-07-23)
 
 
