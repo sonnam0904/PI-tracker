@@ -136,6 +136,34 @@ input, textarea { user-select: text; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Menu xổ từ nút thoát (⎋): Kiểm tra cập nhật / Thoát */
+.exit-wrap { position: relative; }
+.exit-backdrop { position: fixed; inset: 0; z-index: 60; }
+.exit-menu {
+  position: absolute;
+  right: 0; bottom: calc(100% + 6px);
+  z-index: 70;
+  min-width: 180px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 4px;
+  display: flex; flex-direction: column;
+}
+.exit-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.exit-item:hover { background: var(--panel-2); }
+
 /* ===== Notification bell ===== */
 .bell-wrap { position: relative; }
 .bell-btn {

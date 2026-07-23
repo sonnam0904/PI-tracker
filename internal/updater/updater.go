@@ -223,6 +223,9 @@ func fromTarGz(archive []byte) ([]byte, error) {
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	// Archive có thể kèm file phụ (vd .env.example) — ưu tiên file có bit thực
+	// thi. Nếu không thấy, quay lại file thường đầu tiên.
+	var fallback []byte
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -231,9 +234,22 @@ func fromTarGz(archive []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if hdr.Typeflag == tar.TypeReg {
-			return io.ReadAll(tr)
+		if hdr.Typeflag != tar.TypeReg {
+			continue
 		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		if hdr.FileInfo().Mode()&0o111 != 0 {
+			return data, nil // file thực thi
+		}
+		if fallback == nil {
+			fallback = data
+		}
+	}
+	if fallback != nil {
+		return fallback, nil
 	}
 	return nil, fmt.Errorf("không có file thực thi trong archive")
 }

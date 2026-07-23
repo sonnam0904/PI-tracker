@@ -24,6 +24,17 @@ const newWsName = ref('')
 const error = ref('')
 const viewKey = ref(0) // đổi workspace → remount views để nạp lại dữ liệu
 const version = ref('') // phiên bản app đang chạy, hiện ở sidebar
+const menuOpen = ref(false) // menu xổ từ nút thoát (Kiểm tra cập nhật / Thoát)
+const updateBanner = ref(null) // tham chiếu UpdateBanner để kiểm tra thủ công
+
+function checkUpdate() {
+  menuOpen.value = false
+  updateBanner.value?.check(true)
+}
+function doLogout() {
+  menuOpen.value = false
+  logout()
+}
 
 async function refresh() {
   error.value = ''
@@ -151,12 +162,21 @@ async function openTaskFromNotif(n) {
           @error="e => (error = e)"
         />
         <span class="user-name" :title="session.username">@{{ session.username }}</span>
-        <button class="btn sm icon" title="Đăng xuất" @click="logout">⎋</button>
+        <div class="exit-wrap">
+          <button class="btn sm icon" title="Tùy chọn" @click="menuOpen = !menuOpen">⎋</button>
+          <template v-if="menuOpen">
+            <div class="exit-backdrop" @click="menuOpen = false"></div>
+            <div class="exit-menu">
+              <button class="exit-item" @click="checkUpdate">↻ Kiểm tra cập nhật</button>
+              <button class="exit-item" @click="doLogout">⎋ Thoát</button>
+            </div>
+          </template>
+        </div>
       </div>
     </aside>
 
     <main class="main" :key="viewKey">
-      <UpdateBanner />
+      <UpdateBanner ref="updateBanner" />
       <div v-if="error" class="err">{{ error }}</div>
 
       <template v-if="session.workspaceId">

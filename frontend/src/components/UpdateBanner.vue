@@ -2,71 +2,106 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { CheckUpdate, ApplyUpdate } from '../../wailsjs/go/main/App'
 
-const show = ref(false)
+// mode: '' ẩn | 'update' có bản mới | 'uptodate' đã mới nhất | 'error'
+const mode = ref('')
 const latest = ref('')
+const current = ref('')
 const notes = ref('')
 const updating = ref(false)
-const error = ref('')
+const errorMsg = ref('')
+let hideTimer = null
 
-async function check() {
+// manual = true khi người dùng tự bấm "Kiểm tra cập nhật" → cần phản hồi cả khi
+// đã là bản mới nhất hoặc lỗi. Tự động (nền) thì chỉ hiện khi có bản mới.
+async function check(manual = false) {
+  clearTimeout(hideTimer)
   try {
     const st = await CheckUpdate()
+    current.value = st?.current || ''
+    latest.value = st?.latest || ''
+    notes.value = st?.notes || ''
     if (st && st.available) {
-      latest.value = st.latest
-      notes.value = st.notes || ''
-      show.value = true
+      mode.value = 'update'
+    } else if (manual) {
+      mode.value = 'uptodate'
+      hideTimer = setTimeout(() => { if (mode.value === 'uptodate') mode.value = '' }, 4000)
     }
   } catch (e) {
-    // Lỗi mạng/không có release: im lặng, không làm phiền người dùng.
+    if (manual) {
+      errorMsg.value = 'Không kiểm tra được cập nhật: ' + String(e)
+      mode.value = 'error'
+      hideTimer = setTimeout(() => { if (mode.value === 'error') mode.value = '' }, 5000)
+    }
+    // Tự động: im lặng khi lỗi mạng/không có release.
   }
 }
 
 async function update() {
   updating.value = true
-  error.value = ''
+  errorMsg.value = ''
   try {
     // Thành công thì app tự khởi động lại → lời gọi này có thể không trở về.
     await ApplyUpdate()
   } catch (e) {
-    error.value = 'Cập nhật thất bại: ' + String(e)
+    errorMsg.value = 'Cập nhật thất bại: ' + String(e)
+    mode.value = 'error'
     updating.value = false
   }
 }
 
 function dismiss() {
-  show.value = false
+  mode.value = ''
 }
 
-// Kiểm tra lúc mở app, rồi lặp lại mỗi 6 giờ khi app còn chạy.
+// Kiểm tra lúc mở app, rồi lặp lại mỗi 1 giờ khi app còn chạy.
 let timer = null
 onMounted(() => {
   check()
-  timer = setInterval(check, 6 * 60 * 60 * 1000)
+  timer = setInterval(() => check(), 60 * 60 * 1000)
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  clearTimeout(hideTimer)
 })
+
+// Cho App.vue gọi khi người dùng bấm "Kiểm tra cập nhật" trong menu.
+defineExpose({ check })
 </script>
 
 <template>
   <transition name="slide">
-    <div v-if="show" class="update-banner">
+    <!-- Có bản mới -->
+    <div v-if="mode === 'update'" class="update-banner">
       <span class="up-ico">⤴</span>
       <div class="up-text">
-        <template v-if="!error">
-          <b>Đã có phiên bản mới {{ latest }}</b>
-          <span class="up-sub">Cập nhật để nhận tính năng và sửa lỗi mới nhất.</span>
-        </template>
-        <template v-else>
-          <b>{{ error }}</b>
-          <span class="up-sub">Thử lại hoặc tải thủ công từ GitHub Releases.</span>
-        </template>
+        <b>Đã có phiên bản mới v{{ latest }}</b>
+        <span class="up-sub">Cập nhật để nhận tính năng và sửa lỗi mới nhất.</span>
       </div>
       <button class="up-btn" :disabled="updating" @click="update">
         <span v-if="updating" class="spin"></span>
         {{ updating ? 'Đang cập nhật…' : 'Cập nhật ngay' }}
       </button>
       <button class="up-close" :disabled="updating" title="Để sau" @click="dismiss">✕</button>
+    </div>
+
+    <!-- Đã là bản mới nhất (chỉ hiện khi bấm kiểm tra thủ công) -->
+    <div v-else-if="mode === 'uptodate'" class="update-banner neutral">
+      <span class="up-ico">✓</span>
+      <div class="up-text">
+        <b>Bạn đang dùng bản mới nhất</b>
+        <span class="up-sub">Phiên bản hiện tại: v{{ current }}</span>
+      </div>
+      <button class="up-close" title="Đóng" @click="dismiss">✕</button>
+    </div>
+
+    <!-- Lỗi -->
+    <div v-else-if="mode === 'error'" class="update-banner danger">
+      <span class="up-ico">⚠</span>
+      <div class="up-text">
+        <b>{{ errorMsg }}</b>
+        <span class="up-sub">Thử lại hoặc tải thủ công từ GitHub Releases.</span>
+      </div>
+      <button class="up-close" title="Đóng" @click="dismiss">✕</button>
     </div>
   </transition>
 </template>
@@ -82,6 +117,16 @@ onUnmounted(() => {
   background: linear-gradient(90deg, #2563eb, #3b82f6);
   color: #fff;
   box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+}
+.update-banner.neutral {
+  background: var(--panel-2, #1b2230);
+  color: var(--text, #e6edf3);
+  border: 1px solid var(--border, #30363d);
+  box-shadow: none;
+}
+.update-banner.danger {
+  background: linear-gradient(90deg, #b91c1c, #dc2626);
+  box-shadow: 0 6px 20px rgba(220, 38, 38, 0.3);
 }
 .up-ico {
   font-size: 20px;
@@ -121,7 +166,7 @@ onUnmounted(() => {
 .up-close {
   background: transparent;
   border: none;
-  color: #fff;
+  color: currentColor;
   opacity: 0.8;
   cursor: pointer;
   font-size: 14px;

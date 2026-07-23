@@ -94,7 +94,9 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        run: tar -C build/bin -czf "${{ matrix.asset }}" task-manager
+        run: |
+          cp .env.example build/bin/
+          tar -C build/bin -czf "${{ matrix.asset }}" task-manager .env.example
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -102,13 +104,21 @@ jobs:
           # Wails đặt tên .app theo "name" trong wails.json, không chắc trùng
           # outputfilename — dò bundle thực tế thay vì hardcode.
           app=$(ls -d build/bin/*.app | head -n1)
-          echo "Đóng gói: $app"
-          ditto -c -k --keepParent "$app" "${{ matrix.asset }}"
+          echo "Đóng gói: $app + .env.example"
+          # Gom bundle + .env.example vào thư mục tạm rồi nén (không keepParent
+          # để nội dung nằm ở gốc zip: MyApp.app + .env.example).
+          stage=build/pkg
+          mkdir -p "$stage"
+          cp -R "$app" "$stage/"
+          cp .env.example "$stage/"
+          ditto -c -k "$stage" "${{ matrix.asset }}"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path build/bin/task-manager.exe -DestinationPath "${{ matrix.asset }}"
+        run: |
+          Copy-Item .env.example build/bin/
+          Compress-Archive -Path build/bin/task-manager.exe, build/bin/.env.example -DestinationPath "${{ matrix.asset }}"
 
       - name: Upload asset to release
         shell: bash
