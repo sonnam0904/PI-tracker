@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/sonnam0904/PI-tracker/compare/v1.1.0...v1.2.0) (2026-07-23)
+
+
+### Features
+
+* enhance update functionality and UI ([cb71428](https://github.com/sonnam0904/PI-tracker/commit/cb71428cfe1665dbfcd5d8dc8d99859bc89fefe1))
+
 # [1.1.0](https://github.com/sonnam0904/PI-tracker/compare/v1.0.0...v1.1.0) (2026-07-23)
 
 
