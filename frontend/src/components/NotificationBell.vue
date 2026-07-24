@@ -85,6 +85,9 @@ onUnmounted(() => {
       <span v-if="unread > 0" class="bell-badge">{{ unread > 9 ? '9+' : unread }}</span>
     </button>
 
+    <!-- Lớp phủ bắt click ra ngoài để đóng panel (như menu thoát) -->
+    <div v-if="open" class="bell-backdrop" @click="open = false"></div>
+
     <div v-if="open" class="bell-panel">
       <div class="bell-head">
         Thông báo

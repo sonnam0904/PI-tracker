@@ -197,6 +197,8 @@ input, textarea { user-select: text; }
 
 /* ===== Notification bell ===== */
 .bell-wrap { position: relative; }
+/* Lớp phủ bắt click ra ngoài để đóng panel thông báo (ngay dưới panel z:70) */
+.bell-backdrop { position: fixed; inset: 0; z-index: 69; }
 .bell-btn {
   position: relative;
   background: var(--panel-2);
@@ -1054,10 +1056,18 @@ input, textarea { user-select: text; }
 .modal-head .actions { display: flex; gap: 8px; }
 .modal-body { padding: 20px; }
 .modal-foot {
-  display: flex; justify-content: flex-end; gap: 10px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
   padding: 14px 20px;
   border-top: 1px solid var(--border);
   position: sticky; bottom: 0; background: var(--panel);
+}
+/* Lỗi hiển thị bên trái, đẩy hai nút Hủy/Lưu sang phải; gọn để không phá footer */
+.modal-foot-err {
+  margin: 0 auto 0 0;
+  padding: 6px 10px;
+  font-size: 12.5px; text-align: left;
+  overflow-wrap: anywhere;
+  max-height: 3.4em; overflow-y: auto;
 }
 
 /* ===== People list ===== */

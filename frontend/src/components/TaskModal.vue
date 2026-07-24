@@ -129,22 +129,40 @@ const isBug = computed(() => form.type === TYPE_BUG)
 // Task khác (không phải chính bug này) để chọn làm task gốc.
 const relatable = computed(() => props.tasks.filter(t => t.id !== form.id))
 
-// ---- Phụ thuộc (finish-to-start): task phải xong trước task này ----
-// Ứng viên = task khác chưa được chọn (chặn vòng lặp do backend lo).
-const depCandidates = computed(() =>
-  props.tasks.filter(t => t.id !== form.id && !form.dependsOn.includes(t.id))
-)
+// ---- Phụ thuộc (finish-to-start): combobox tìm kiếm theo tên/#id ----
+const depPicker = reactive({ open: false, query: '', idx: 0 })
+
 function depTitle(id) {
   const t = props.tasks.find(x => x.id === id)
   return t ? `#${t.id} · ${t.title}` : `#${id}`
 }
-function addDep(e) {
-  const id = Number(e.target.value)
+// Ứng viên = task khác, chưa chọn, khớp text gõ vào (theo #id hoặc tiêu đề).
+// Chặn vòng lặp do backend lo; ở đây chỉ lọc hiển thị.
+const depMatches = computed(() => {
+  const q = depPicker.query.trim().toLowerCase()
+  const base = props.tasks.filter(t => t.id !== form.id && !form.dependsOn.includes(t.id))
+  const list = q ? base.filter(t => `#${t.id} ${t.title}`.toLowerCase().includes(q)) : base
+  return list.slice(0, 8)
+})
+function addDep(id) {
   if (id && !form.dependsOn.includes(id)) form.dependsOn.push(id)
-  e.target.value = ''
+  depPicker.query = ''
+  depPicker.idx = 0
 }
 function removeDep(id) {
   form.dependsOn = form.dependsOn.filter(x => x !== id)
+}
+function onDepKeydown(e) {
+  const list = depMatches.value
+  if (!depPicker.open || !list.length) return
+  if (e.key === 'ArrowDown') { e.preventDefault(); depPicker.idx = (depPicker.idx + 1) % list.length }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); depPicker.idx = (depPicker.idx - 1 + list.length) % list.length }
+  else if (e.key === 'Enter') { e.preventDefault(); addDep((list[depPicker.idx] || list[0]).id) }
+  else if (e.key === 'Escape') { depPicker.open = false }
+}
+// Trễ một nhịp để mousedown trên gợi ý kịp chạy trước khi đóng.
+function onDepBlur() {
+  setTimeout(() => (depPicker.open = false), 150)
 }
 
 const BUG_TEMPLATE = `## Các bước tái hiện
@@ -425,7 +443,9 @@ async function doDelete() {
 </script>
 
 <template>
-  <div class="modal-overlay" @mousedown.self="emit('close')">
+  <!-- Không đóng khi click ra ngoài (tránh mất dữ liệu đang nhập); chỉ đóng
+       qua nút ✕, Hủy hoặc Lưu. -->
+  <div class="modal-overlay">
     <div class="modal" :class="{ wide: editing }">
       <div class="modal-head">
         <h3>{{ editing ? 'Sửa task' : 'Thêm task' }}</h3>
@@ -444,8 +464,6 @@ async function doDelete() {
       </div>
 
       <div class="modal-body">
-        <div v-if="error" class="err">{{ error }}</div>
-
         <div :class="{ 'detail-grid': editing }">
           <!-- Cột trái: form -->
           <div class="form-grid">
@@ -632,10 +650,27 @@ async function doDelete() {
                   <button type="button" class="dep-del" title="Bỏ phụ thuộc" @click="removeDep(id)">✕</button>
                 </span>
               </div>
-              <select :disabled="!depCandidates.length" @change="addDep">
-                <option value="">+ Thêm task phải xong trước…</option>
-                <option v-for="t in depCandidates" :key="t.id" :value="t.id">#{{ t.id }} · {{ t.title }}</option>
-              </select>
+              <div class="dep-search">
+                <input
+                  v-model="depPicker.query"
+                  placeholder="Tìm & thêm task phải xong trước… (gõ tên hoặc #id)"
+                  @focus="depPicker.open = true"
+                  @input="depPicker.open = true; depPicker.idx = 0"
+                  @keydown="onDepKeydown"
+                  @blur="onDepBlur"
+                />
+                <div v-if="depPicker.open && depMatches.length" class="dep-pop">
+                  <button
+                    v-for="(t, i) in depMatches" :key="t.id"
+                    type="button" class="mention-item" :class="{ active: i === depPicker.idx }"
+                    @mousedown.prevent="addDep(t.id)"
+                    @mousemove="depPicker.idx = i"
+                  >#{{ t.id }} · {{ t.title }}</button>
+                </div>
+                <div v-else-if="depPicker.open && depPicker.query.trim()" class="dep-pop dep-pop-empty">
+                  Không tìm thấy task khớp
+                </div>
+              </div>
               <span class="hint">Timeline sẽ vẽ mũi tên từ mỗi task phải xong trước → task này.</span>
             </div>
           </div>
@@ -756,6 +791,7 @@ async function doDelete() {
       </div>
 
       <div class="modal-foot">
+        <span v-if="error" class="err modal-foot-err">{{ error }}</span>
         <button class="btn" @click="emit('close')">Hủy</button>
         <button class="btn primary" @click="save">Lưu</button>
       </div>
@@ -817,4 +853,18 @@ async function doDelete() {
   color: var(--text-dim, #888); font-size: 12px; line-height: 1; padding: 2px;
 }
 .dep-del:hover { color: #ff6b6b; }
+
+/* Combobox tìm kiếm task phụ thuộc — dropdown mở XUỐNG dưới ô nhập */
+.dep-search { position: relative; }
+.dep-search input { width: 100%; }
+.dep-pop {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
+  max-height: 220px; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+  padding: 4px; display: flex; flex-direction: column;
+}
+.dep-pop-empty {
+  padding: 8px 10px; color: var(--text-faint); font-size: 12.5px;
+}
 </style>
