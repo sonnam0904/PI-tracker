@@ -1,3 +1,10 @@
+## [1.5.1](https://github.com/sonnam0904/PI-tracker/compare/v1.5.0...v1.5.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* address WebKitGTK rendering issue on Linux ([522144a](https://github.com/sonnam0904/PI-tracker/commit/522144a3798fddf0d1500a4918a3060d9ed277b1))
+
 # [1.5.0](https://github.com/sonnam0904/PI-tracker/compare/v1.4.1...v1.5.0) (2026-07-24)
 
 
