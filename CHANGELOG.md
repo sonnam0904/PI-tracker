@@ -1,3 +1,17 @@
+# [1.5.0](https://github.com/sonnam0904/PI-tracker/compare/v1.4.1...v1.5.0) (2026-07-24)
+
+
+### Bug Fixes
+
+* enhance database connection handling and UI error reporting ([0810818](https://github.com/sonnam0904/PI-tracker/commit/081081890afbb8f074af6db0fbb34dab30ef95cc))
+* enhance notification and task dependency UI ([c6100c1](https://github.com/sonnam0904/PI-tracker/commit/c6100c124df78aebf2d0da1f235c9edae252777d))
+
+
+### Features
+
+* enhance Linux desktop installation and data management ([30cd33b](https://github.com/sonnam0904/PI-tracker/commit/30cd33b27cf38b2d63ce4232c1c2ef32c9345924))
+* implement observer role for workspace members ([69c3ede](https://github.com/sonnam0904/PI-tracker/commit/69c3edee4b821a5e5f836c59b8b69cd4290689f9))
+
 ## [1.4.1](https://github.com/sonnam0904/PI-tracker/compare/v1.4.0...v1.4.1) (2026-07-23)
 
 
