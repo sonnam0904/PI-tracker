@@ -3,24 +3,65 @@ package database
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"taskmanager/internal/config"
 	"taskmanager/internal/models"
 )
 
-// Connect opens the database chosen by DB_DRIVER and runs migrations.
+// connectTimeout là trần thời gian cho toàn bộ bước kết nối + migrate. DB ở xa
+// không tới được (sai host, mạng/VPN, firewall) mà không có trần sẽ khiến dial
+// TCP treo rất lâu — làm treo cả khởi động app LẪN bước `wails generate
+// bindings` (Wails chạy chính app để trích xuất binding). Giữ ngắn để lỗi
+// nhanh và hiện banner "Thử lại".
+const connectTimeout = 8 * time.Second
+
+// Connect opens the database chosen by DB_DRIVER and runs migrations, với trần
+// thời gian để không bao giờ treo vô hạn khi DB không tới được.
 func Connect(cfg *config.Config) (*gorm.DB, error) {
+	type result struct {
+		db  *gorm.DB
+		err error
+	}
+	ch := make(chan result, 1) // buffered: goroutine không kẹt nếu đã timeout
+	go func() {
+		db, err := connect(cfg)
+		ch <- result{db, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.db, r.err
+	case <-time.After(connectTimeout):
+		// Đã timeout nhưng connect vẫn chạy nền: dọn để không rò rỉ. Nếu nó
+		// hoàn tất muộn và mở được DB, đóng handle (kèm pool kết nối) — tránh
+		// để lại kết nối/migrate lơ lửng, nhất là khi người dùng Thử lại nhiều lần.
+		go func() {
+			if r := <-ch; r.db != nil {
+				if sqlDB, err := r.db.DB(); err == nil {
+					_ = sqlDB.Close()
+				}
+			}
+		}()
+		return nil, fmt.Errorf(
+			"hết thời gian chờ kết nối cơ sở dữ liệu %s sau %s — kiểm tra máy chủ DB, mạng/VPN và cấu hình trong .env",
+			cfg.Driver, connectTimeout)
+	}
+}
+
+// connect mở kết nối và chạy migrate (không giới hạn thời gian — do Connect bọc).
+func connect(cfg *config.Config) (*gorm.DB, error) {
 	var dialector gorm.Dialector
 
 	switch cfg.Driver {
 	case "postgres":
 		dsn := fmt.Sprintf(
-			"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+			"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable connect_timeout=5",
 			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name,
 		)
 		// search_path đặt schema mặc định cho connection: AutoMigrate và mọi
@@ -31,7 +72,7 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		dialector = postgres.Open(dsn)
 	case "mysql":
 		dsn := fmt.Sprintf(
-			"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+			"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&timeout=5s",
 			cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Name,
 		)
 		dialector = mysql.Open(dsn)
@@ -41,7 +82,11 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("unsupported DB_DRIVER %q (want sqlite, postgres or mysql)", cfg.Driver)
 	}
 
-	db, err := gorm.Open(dialector, &gorm.Config{})
+	// Logger im lặng: lỗi DB đã hiển thị trên banner ở UI, không cần đổ SQL/
+	// lỗi kết nối ra stdout (gây nhiễu khi chạy ./task-manager từ terminal).
+	db, err := gorm.Open(dialector, &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", cfg.Driver, err)
 	}
@@ -69,14 +114,11 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 // migrateLegacy dọn schema đời cũ, chạy TRƯỚC AutoMigrate:
 //   - tasks.type đổi từ chuỗi sang số (map nhãn cũ → hằng số TaskType) khi
 //     cột còn kiểu chữ, để AutoMigrate đổi kiểu cột xong là dữ liệu đã đúng;
-//   - bỏ bảng people (đã thay bằng users + workspace_members từ khi có
-//     đăng nhập/workspace, không còn code nào đọc).
+//   - bỏ bảng people .
 //
 // Mọi bước đều idempotent — chạy lại lần sau không đổi gì.
 func migrateLegacy(db *gorm.DB) error {
-	// Chỉ convert nhãn cũ khi cột type còn kiểu chữ. Trên Postgres cột đã là
-	// bigint nên so sánh type = 'Theo plan' sẽ lỗi kiểu (SQLSTATE 22P02); khi
-	// đó dữ liệu vốn đã ở dạng số, không cần (và không được) chạy bước này.
+	// Chỉ convert nhãn cũ khi cột type còn kiểu chữ.
 	if db.Migrator().HasTable("tasks") && typeColumnIsText(db) {
 		for label, code := range map[string]models.TaskType{
 			"Theo plan":           models.TypePlan,

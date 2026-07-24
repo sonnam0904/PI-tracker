@@ -17,6 +17,8 @@ import (
 	"gorm.io/gorm"
 
 	"taskmanager/internal/ai"
+	"taskmanager/internal/config"
+	"taskmanager/internal/database"
 	"taskmanager/internal/machinecrypto"
 	"taskmanager/internal/models"
 	"taskmanager/internal/report"
@@ -27,7 +29,18 @@ const dateLayout = "2006-01-02"
 
 // App exposes backend methods to the Vue frontend via Wails bindings.
 type App struct {
-	ctx           context.Context
+	ctx context.Context
+
+	// db là kết nối hiện tại; nil khi kết nối lúc khởi động thất bại (chế độ
+	// suy giảm: chỉ hiện banner lỗi + nút Thử lại). dbErr giữ thông báo thân
+	// thiện để frontend hiển thị. dbMu bảo vệ cả ba: RetryDB chạy trên goroutine
+	// Wails, đọc/ghi song song với DBStatus và startup. dbConnecting chặn hai
+	// lần RetryDB chồng nhau (double-click) → khỏi start watcher trùng.
+	dbMu         sync.Mutex
+	db           *gorm.DB
+	dbErr        string
+	dbConnecting bool
+
 	tasks         *service.TaskService
 	settings      *service.SettingsService
 	metrics       *service.MetricsService
@@ -61,21 +74,7 @@ type App struct {
 }
 
 func NewApp(db *gorm.DB) *App {
-	tasks := service.NewTaskService(db)
-	settings := service.NewSettingsService(db)
-	workspaces := service.NewWorkspaceService(db)
-	return &App{
-		tasks:         tasks,
-		settings:      settings,
-		workspaces:    workspaces,
-		metrics:       service.NewMetricsService(tasks, workspaces, settings),
-		todos:         service.NewTodoService(db),
-		activities:    service.NewActivityService(db),
-		statuses:      service.NewStatusService(db),
-		auth:          service.NewAuthService(db),
-		notifications: service.NewNotificationService(db),
-		savedViews:    service.NewSavedViewService(db),
-		dependencies:  service.NewDependencyService(db),
+	a := &App{
 		// Gợi ý estimate bằng LLM — cấu hình qua .env (AI_PROVIDER/AI_API_KEY/
 		// AI_MODEL). Chưa cấu hình thì estimator vẫn tồn tại nhưng Enabled()=false.
 		estimator: ai.NewEstimator(ai.NewClient(ai.Load())),
@@ -83,10 +82,171 @@ func NewApp(db *gorm.DB) *App {
 		// toast, macOS: notification center) — hiện cả khi app chạy nền.
 		osNotify: func(title, body string) { _ = beeep.Notify(title, body, "") },
 	}
+	a.attachDB(db)
+	return a
+}
+
+// attachDB gắn (hoặc thay) kết nối DB và dựng lại toàn bộ service trên nó.
+// db == nil → giữ chế độ suy giảm, không dựng service (mọi thao tác cần DB
+// sẽ không được gọi vì frontend đang ở màn báo lỗi). Dùng chung cho khởi tạo
+// và RetryDB khi kết nối lại thành công.
+func (a *App) attachDB(db *gorm.DB) {
+	a.db = db
+	if db == nil {
+		return
+	}
+	tasks := service.NewTaskService(db)
+	settings := service.NewSettingsService(db)
+	workspaces := service.NewWorkspaceService(db)
+	a.tasks = tasks
+	a.settings = settings
+	a.workspaces = workspaces
+	a.metrics = service.NewMetricsService(tasks, workspaces, settings)
+	a.todos = service.NewTodoService(db)
+	a.activities = service.NewActivityService(db)
+	a.statuses = service.NewStatusService(db)
+	a.auth = service.NewAuthService(db)
+	a.notifications = service.NewNotificationService(db)
+	a.savedViews = service.NewSavedViewService(db)
+	a.dependencies = service.NewDependencyService(db)
+}
+
+// DBStatusDTO cho frontend biết trạng thái kết nối DB. Tách hai khái niệm:
+//   - Configured: đã có kết nối (a.db != nil). false = thất bại lúc khởi động
+//     → frontend hiện MÀN CHẶN (chỉ có nút Thử lại).
+//   - Ok: ping thật thành công (kết nối còn khỏe). Configured && !Ok = kết nối
+//     đã mở nhưng DB rớt lúc đang chạy → frontend hiện banner runtime, tự tắt
+//     khi Ok trở lại. Nhờ tách vậy, sức khỏe DB không còn trộn vào banner lỗi chung.
+type DBStatusDTO struct {
+	Ok         bool   `json:"ok"`
+	Configured bool   `json:"configured"`
+	Error      string `json:"error"`
+}
+
+// pingDB kiểm tra kết nối còn sống không (bounded 3s). Dùng chung cho DBStatus
+// và RetryDB để hai bên hiểu "khỏe" y hệt nhau.
+func pingDB(db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return sqlDB.PingContext(ctx)
+}
+
+// DBStatus trả trạng thái kết nối DB hiện tại bằng cách PING thật, nên phản
+// ánh cả trường hợp kết nối đã mở nhưng DB rớt lúc đang chạy.
+func (a *App) DBStatus() DBStatusDTO {
+	// Chụp nhanh con trỏ dưới khóa rồi ping NGOÀI khóa (ping có thể mất tới 3s).
+	a.dbMu.Lock()
+	db, dbErr := a.db, a.dbErr
+	a.dbMu.Unlock()
+	if db == nil {
+		msg := dbErr
+		if msg == "" {
+			msg = "Chưa kết nối cơ sở dữ liệu"
+		}
+		return DBStatusDTO{Ok: false, Configured: false, Error: msg}
+	}
+	if err := pingDB(db); err != nil {
+		return DBStatusDTO{Ok: false, Configured: true, Error: "Mất kết nối cơ sở dữ liệu: " + err.Error()}
+	}
+	return DBStatusDTO{Ok: true, Configured: true}
+}
+
+// RetryDB thống nhất với DBStatus về khái niệm "khỏe":
+//   - Đã có kết nối (a.db != nil): PING. Khỏe → xóa cờ lỗi, xong. Chưa khỏe →
+//     trả lỗi (chính lần ping này đã "đánh thức" pool database/sql để nó tự
+//     dial lại kết nối chết; health-watcher ở frontend sẽ tự tắt banner khi
+//     pool hồi phục). KHÔNG dựng lại *gorm.DB ở đây: watcher/handler đang dùng
+//     service pointer hiện tại, thay nóng sẽ gây data race — để pool tự lành.
+//   - Chưa có kết nối (thất bại lúc khởi động): kết nối lần đầu + start watcher.
+//
+// Chống gọi song song bằng dbConnecting: double-click "Thử lại" không dựng
+// service/watcher hai lần. Bước Connect (tới connectTimeout) chạy NGOÀI khóa.
+func (a *App) RetryDB() error {
+	a.dbMu.Lock()
+	db := a.db
+	a.dbMu.Unlock()
+
+	if db != nil {
+		if err := pingDB(db); err != nil {
+			return fmt.Errorf("cơ sở dữ liệu vẫn chưa phản hồi: %v", err)
+		}
+		a.dbMu.Lock()
+		a.dbErr = ""
+		a.dbMu.Unlock()
+		return nil
+	}
+
+	// Giành quyền kết nối lần đầu.
+	a.dbMu.Lock()
+	if a.db != nil { // một lần gọi khác vừa kết nối xong
+		a.dbMu.Unlock()
+		return nil
+	}
+	if a.dbConnecting {
+		a.dbMu.Unlock()
+		return fmt.Errorf("đang thử kết nối lại, vui lòng đợi…")
+	}
+	a.dbConnecting = true
+	a.dbMu.Unlock()
+
+	cfg, err := config.Load()
+	var newDB *gorm.DB
+	if err == nil {
+		newDB, err = database.Connect(cfg)
+	}
+
+	a.dbMu.Lock()
+	a.dbConnecting = false
+	if err != nil {
+		if cfg != nil {
+			a.dbErr = friendlyDBError(cfg, err)
+		} else {
+			a.dbErr = "Cấu hình không hợp lệ: " + err.Error()
+		}
+		msg := a.dbErr
+		a.dbMu.Unlock()
+		return fmt.Errorf("%s", msg)
+	}
+	a.attachDB(newDB) // ghi a.db + service pointers dưới khóa
+	a.dbErr = ""
+	a.dbMu.Unlock()
+
+	// Bật watcher nền như lúc startup (ctx đã có sau OnStartup). Chỉ tới đây một
+	// lần cho mỗi lần kết nối-lần-đầu thành công nhờ guard dbConnecting ở trên.
+	if a.ctx != nil {
+		go a.watchNotifications(a.ctx)
+		go a.watchDueTasks(a.ctx)
+	}
+	return nil
+}
+
+// friendlyDBError chuyển lỗi kết nối thành thông báo tiếng Việt dễ hiểu, nêu
+// đúng chỗ cần kiểm tra theo loại DB.
+func friendlyDBError(cfg *config.Config, err error) string {
+	switch cfg.Driver {
+	case "postgres", "mysql":
+		return fmt.Sprintf(
+			"Không kết nối được cơ sở dữ liệu %s tại %s:%s (db: %s). Kiểm tra máy chủ DB, mạng/VPN và thông tin trong .env. Chi tiết: %v",
+			cfg.Driver, cfg.Host, cfg.Port, cfg.Name, err)
+	default:
+		return fmt.Sprintf(
+			"Không mở được cơ sở dữ liệu SQLite (%s). Kiểm tra đường dẫn và quyền ghi trong .env. Chi tiết: %v",
+			cfg.SQLitePath, err)
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.dbMu.Lock()
+	hasDB := a.db != nil
+	a.dbMu.Unlock()
+	if !hasDB {
+		return // chưa kết nối DB: chờ người dùng bấm Thử lại (RetryDB)
+	}
 	go a.watchNotifications(ctx)
 	go a.watchDueTasks(ctx)
 }

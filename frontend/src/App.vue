@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { GetSession, Logout, ResumeSession, ListSavedAccounts, ForgetAccount, ListWorkspaces, SelectWorkspace, CreateWorkspace, AppVersion } from '../wailsjs/go/main/App'
+import { ref, computed, onMounted, watch } from 'vue'
+import { GetSession, Logout, ResumeSession, ListSavedAccounts, ForgetAccount, ListWorkspaces, SelectWorkspace, CreateWorkspace, AppVersion, DBStatus, RetryDB } from '../wailsjs/go/main/App'
 import { getTokens, setTokens, removeToken } from './lib/session'
 import AuthView from './components/AuthView.vue'
 import AccountPicker from './components/AccountPicker.vue'
@@ -33,6 +33,47 @@ const updateBanner = ref(null) // tham chiếu UpdateBanner để kiểm tra th�
 // 'login' (đăng nhập/thêm tài khoản). savedAccounts = các tài khoản đã ghi nhớ.
 const authScreen = ref('')
 const savedAccounts = ref([])
+
+// Hai trạng thái DB TÁCH BIỆT (một nguồn chân lý là DBStatus):
+//   - dbError: thất bại lúc KHỞI ĐỘNG (chưa có kết nối) → MÀN CHẶN toàn trang.
+//   - dbDown : kết nối đã mở nhưng DB RỚT lúc đang chạy → banner runtime, tự
+//     tắt đúng lúc DB khỏe lại. Không đụng tới banner `error` chung.
+const dbError = ref('')
+const dbRetrying = ref(false)
+const dbDown = ref('')
+
+// Watcher sức khỏe DB: setTimeout ĐỆ QUY (lên lịch lần kế chỉ SAU khi ping xong
+// → không chồng lấn) và DỪNG khi khỏe. Chỉ bật khi nghi DB rớt (một thao tác
+// lỗi). Nếu ping cho thấy DB vẫn khỏe thì thôi ngay (lỗi đó không phải do DB).
+let healthTimer = null
+async function checkDBHealth() {
+  healthTimer = null
+  let st = null
+  try { st = await DBStatus() } catch { /* coi như chưa rõ → dò tiếp */ }
+  if (st && st.configured && !st.ok) {
+    dbDown.value = st.error || 'Mất kết nối cơ sở dữ liệu'
+    error.value = '' // dbDown thay thế banner lỗi chung cho ca DB rớt
+    healthTimer = setTimeout(checkDBHealth, 3000) // còn rớt → dò tiếp
+  } else if (!st) {
+    healthTimer = setTimeout(checkDBHealth, 3000) // không rõ → thử lại
+  } else {
+    dbDown.value = '' // khỏe (hoặc chưa configured) → dừng dò
+  }
+}
+function startHealthWatch() {
+  if (healthTimer) return // đã đang dò
+  healthTimer = setTimeout(checkDBHealth, 0)
+}
+// Bất kỳ lỗi thao tác nào cũng probe MỘT lần: nếu do DB rớt → bật banner dbDown
+// (và dò tới khi hồi phục); nếu DB vẫn khỏe → dừng ngay, giữ banner `error`.
+watch(error, v => { if (v) startHealthWatch() })
+
+// Bấm "Thử lại" trên banner dbDown: ping ngay (đánh thức pool) rồi cập nhật.
+async function retryDBDown() {
+  if (healthTimer) { clearTimeout(healthTimer); healthTimer = null }
+  try { await RetryDB() } catch { /* vẫn lỗi → checkDBHealth sẽ phản ánh */ }
+  await checkDBHealth()
+}
 
 const loggedIn = computed(() => !!session.value?.userId)
 // Tài khoản khác (để chuyển nhanh) và token của tài khoản đang mở.
@@ -86,13 +127,44 @@ async function loadSavedAccounts() {
   }
 }
 
-onMounted(async () => {
-  // Mỗi lần mở app: session trong bộ nhớ backend rỗng → hiện màn chọn tài
-  // khoản nếu có tài khoản đã ghi nhớ, ngược lại hiện màn đăng nhập.
+// Khởi tạo màn xác thực (session + tài khoản đã ghi nhớ). Tách riêng để dùng
+// lại sau khi RetryDB kết nối lại thành công.
+async function initAuth() {
   session.value = await GetSession()
   await loadSavedAccounts()
   authScreen.value = savedAccounts.value.length ? 'picker' : 'login'
+}
+
+onMounted(async () => {
+  // Chỉ MÀN CHẶN khi CHƯA có kết nối (thất bại lúc khởi động). Nếu đã có kết
+  // nối nhưng đang rớt (configured && !ok) thì vẫn vào app + bật health-watch
+  // để hiện banner runtime — không chặn toàn trang bằng kết quả ping.
+  try {
+    const st = await DBStatus()
+    if (st && !st.configured) {
+      dbError.value = st.error || 'Không kết nối được cơ sở dữ liệu'
+      return
+    }
+    if (st && !st.ok) startHealthWatch()
+  } catch { /* DBStatus không trả về (bản cũ) → cứ tiếp tục như thường */ }
+  // Mỗi lần mở app: session trong bộ nhớ backend rỗng → hiện màn chọn tài
+  // khoản nếu có tài khoản đã ghi nhớ, ngược lại hiện màn đăng nhập.
+  await initAuth()
 })
+
+async function retryDB() {
+  dbRetrying.value = true
+  error.value = ''
+  try {
+    await RetryDB()
+    dbError.value = ''
+    await initAuth()
+  } catch (e) {
+    dbError.value = String(e)
+  } finally {
+    dbRetrying.value = false
+  }
+}
 onMounted(async () => {
   try {
     version.value = await AppVersion()
@@ -200,8 +272,26 @@ async function openTaskFromNotif(n) {
 </script>
 
 <template>
+  <!-- Kết nối DB thất bại: banner lỗi giống banner cập nhật + nút Thử lại -->
+  <div v-if="dbError" class="db-error-wrap">
+    <div class="db-error-card">
+      <div class="db-banner">
+        <span class="ico">⚠</span>
+        <div class="txt">
+          <b>Không kết nối được cơ sở dữ liệu</b>
+          <span>{{ dbError }}</span>
+        </div>
+      </div>
+      <button class="btn primary db-retry" :disabled="dbRetrying" @click="retryDB">
+        <span v-if="dbRetrying" class="db-spin"></span>
+        {{ dbRetrying ? 'Đang thử lại…' : 'Thử lại' }}
+      </button>
+      <p class="hint db-error-hint">Kiểm tra máy chủ DB, mạng/VPN và cấu hình trong tệp <code>.env</code>, rồi bấm Thử lại.</p>
+    </div>
+  </div>
+
   <AccountPicker
-    v-if="authScreen === 'picker'"
+    v-else-if="authScreen === 'picker'"
     :accounts="savedAccounts"
     @pick="pickAccount"
     @remove="forgetAccount"
@@ -283,7 +373,16 @@ async function openTaskFromNotif(n) {
 
     <main class="main" :key="viewKey">
       <UpdateBanner ref="updateBanner" />
-      <div v-if="error" class="err">{{ error }}</div>
+      <!-- DB rớt lúc đang chạy: banner riêng, tự tắt khi DB khỏe trở lại -->
+      <div v-if="dbDown" class="db-down-banner">
+        <span class="db-spin"></span>
+        <span class="txt">{{ dbDown }}</span>
+        <button class="db-down-retry" title="Thử lại ngay" @click="retryDBDown">↻ Thử lại</button>
+      </div>
+      <div v-if="error" class="err app-err">
+        <span>{{ error }}</span>
+        <button class="err-close" title="Đóng" @click="error = ''">✕</button>
+      </div>
 
       <template v-if="session.workspaceId">
         <Dashboard v-if="tab === 'dashboard'" />
