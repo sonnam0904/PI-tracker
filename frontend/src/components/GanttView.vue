@@ -335,6 +335,7 @@ function onSaved() {
           <div class="g-label" :style="{ width: LABEL_W + 'px' }" @click="editing = t" :title="t.title">
             <span class="t">
               <span v-if="t.priority && t.priority !== 'P3'" class="prio" :class="t.priority">{{ t.priority }}</span>
+              <span v-if="t.size" class="size-badge" :class="'sz-' + t.size" :title="'Size ' + t.size">{{ t.size }}</span>
               <span v-if="isBug(t)" title="Bug">🐞</span>
               {{ t.title }}
             </span>

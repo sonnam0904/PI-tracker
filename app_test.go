@@ -694,6 +694,91 @@ func TestMemberLock(t *testing.T) {
 	}
 }
 
+// Observer + phân quyền owner: owner đặt member làm "chỉ quan sát" → member bị
+// loại khỏi bảng so sánh và khỏi baseline (TeamSize); member không được
+// SaveSettings hay đổi observer (chỉ owner).
+func TestMemberObserverAndOwnerOnly(t *testing.T) {
+	app := testApp(t)
+
+	loginApp(t, app, "alice") // alice = owner
+	bobSession, err := app.Register("bob", "secret123")
+	if err != nil {
+		t.Fatalf("register bob: %v", err)
+	}
+	bobID := bobSession.UserID
+	if _, err := app.Login("alice", "secret123"); err != nil {
+		t.Fatalf("login alice: %v", err)
+	}
+	if err := app.InviteMember("bob"); err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	if _, err := app.Login("bob", "secret123"); err != nil {
+		t.Fatalf("login bob: %v", err)
+	}
+	if err := app.RespondInvitation(*findInviteID(t, app), true); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+
+	// Trước khi đánh dấu observer: team 2 người.
+	if _, err := app.Login("alice", "secret123"); err != nil {
+		t.Fatalf("login alice: %v", err)
+	}
+	month := time.Now().Format("2006-01")
+	team, err := app.GetTeamMetrics(month, "")
+	if err != nil {
+		t.Fatalf("team metrics: %v", err)
+	}
+	if team.Team.TeamSize != 2 {
+		t.Fatalf("TeamSize trước observer = %d, want 2", team.Team.TeamSize)
+	}
+	if len(team.Members) != 2 {
+		t.Fatalf("số dòng thành viên = %d, want 2", len(team.Members))
+	}
+
+	// Owner đặt bob làm observer.
+	if err := app.SetMemberObserver(bobID, true); err != nil {
+		t.Fatalf("đặt observer: %v", err)
+	}
+	team, err = app.GetTeamMetrics(month, "")
+	if err != nil {
+		t.Fatalf("team metrics sau observer: %v", err)
+	}
+	if team.Team.TeamSize != 1 {
+		t.Fatalf("TeamSize sau observer = %d, want 1 (observer không tính)", team.Team.TeamSize)
+	}
+	for _, m := range team.Members {
+		if m.AssigneeID == bobID {
+			t.Fatal("observer bob không được xuất hiện ở bảng so sánh")
+		}
+	}
+	// ListPeople vẫn trả bob kèm cờ observer.
+	people, _ := app.ListPeople()
+	seen := false
+	for _, p := range people {
+		if p.ID == bobID {
+			seen = true
+			if !p.Observer {
+				t.Error("bob phải có observer = true")
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("bob vẫn phải là thành viên (chỉ là observer)")
+	}
+
+	// Member (bob) không được đổi observer hay SaveSettings.
+	if _, err := app.Login("bob", "secret123"); err != nil {
+		t.Fatalf("login bob: %v", err)
+	}
+	if err := app.SetMemberObserver(bobID, false); err == nil || !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("member đổi observer phải lỗi, nhận: %v", err)
+	}
+	if err := app.SaveSettings(models.Settings{TBaseline: 1, CTBaseline: 1, PITarget: 1, Capacity: 2}); err == nil ||
+		!strings.Contains(err.Error(), "owner") {
+		t.Fatalf("member SaveSettings phải bị chặn (chỉ owner), nhận: %v", err)
+	}
+}
+
 // Poller thông báo HĐH: lần đầu thấy user chỉ baseline (không notify backlog),
 // bản ghi mới sau đó được notify đúng một lần, logout thì reset.
 func TestOSNotifications(t *testing.T) {

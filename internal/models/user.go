@@ -36,7 +36,11 @@ type WorkspaceMember struct {
 	Role        string `json:"role"` // "owner" | "member"
 	// Locked: owner khóa thành viên — bị khóa thì không thao tác được gì
 	// trong workspace này cho tới khi được mở khóa (membership vẫn giữ).
-	Locked    bool      `json:"locked"`
+	Locked bool `json:"locked"`
+	// Observer: thành viên chỉ quan sát/quản lý, KHÔNG tính vào chỉ số —
+	// không kể vào số người của team (baseline PI) và không hiện ở bảng so
+	// sánh thành viên. Vẫn dùng app bình thường; owner bật/tắt cờ này.
+	Observer  bool      `json:"observer"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -64,6 +68,6 @@ type Notification struct {
 	WorkspaceID *uint `json:"workspaceId"`
 	// Với kind=mention/reply: bình luận cụ thể — UI scroll tới và làm nổi bật.
 	ActivityID *uint     `json:"activityId"`
-	Read        bool      `gorm:"index" json:"read"`
-	CreatedAt   time.Time `json:"createdAt"`
+	Read       bool      `gorm:"index" json:"read"`
+	CreatedAt  time.Time `json:"createdAt"`
 }

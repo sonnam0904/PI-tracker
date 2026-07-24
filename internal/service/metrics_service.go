@@ -192,8 +192,16 @@ func (s *MetricsService) Compute(wsID uint, month, now time.Time, assigneeID uin
 		if err != nil {
 			return Metrics{}, st, err
 		}
-		if len(members) > 0 {
-			teamSize = len(members)
+		// Chỉ đếm thành viên THỰC SỰ làm việc: observer (người quan sát/quản lý)
+		// không kể vào baseline để không làm loãng PI của team.
+		counted := 0
+		for _, mb := range members {
+			if !mb.Observer {
+				counted++
+			}
+		}
+		if counted > 0 {
+			teamSize = counted
 		}
 	}
 
@@ -223,17 +231,17 @@ func (s *MetricsService) Compute(wsID uint, month, now time.Time, assigneeID uin
 	}
 
 	m := Metrics{
-		MonthStart:    start,
-		MonthEnd:      end,
-		ElapsedEnd:    elapsedEnd,
-		ElapsedWeeks:  elapsedDays / 7,
-		FullWeeks:     end.Sub(start).Hours() / 24 / 7,
+		MonthStart:        start,
+		MonthEnd:          end,
+		ElapsedEnd:        elapsedEnd,
+		ElapsedWeeks:      elapsedDays / 7,
+		FullWeeks:         end.Sub(start).Hours() / 24 / 7,
 		TeamSize:          teamSize,
 		TeamTBaseline:     st.TBaseline * float64(teamSize),
 		TeamPointBaseline: st.PointBaseline * float64(teamSize),
 		DoneCount:         len(plain),
-		BugDoneCount:  len(bugs),
-		WIP:           wip,
+		BugDoneCount:      len(bugs),
+		WIP:               wip,
 	}
 
 	var ctSum, ltSum float64

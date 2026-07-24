@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { GetSettings, SaveSettings, ListPeople, InviteMember, GetSession, SetMemberLock } from '../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, ListPeople, InviteMember, GetSession, SetMemberLock, SetMemberObserver } from '../../wailsjs/go/main/App'
 import { buildPeopleMeta } from '../lib/people'
 
 const st = ref(null)
@@ -12,6 +12,8 @@ const error = ref('')
 const saved = ref(false)
 
 const peopleMeta = computed(() => buildPeopleMeta(people.value))
+// Số người THỰC SỰ tính vào chỉ số (bỏ observer) — dùng cho ghi chú công thức PI.
+const countedPeople = computed(() => people.value.filter(p => !p.observer).length)
 
 async function load() {
   error.value = ''
@@ -51,6 +53,17 @@ async function toggleLock(p) {
   error.value = ''
   try {
     await SetMemberLock(p.ID, !p.locked)
+    people.value = await ListPeople()
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
+// Bật/tắt "chỉ quan sát": observer không tính vào baseline/chỉ số team.
+async function toggleObserver(p) {
+  error.value = ''
+  try {
+    await SetMemberObserver(p.ID, !p.observer)
     people.value = await ListPeople()
   } catch (e) {
     error.value = String(e)
@@ -117,7 +130,8 @@ async function invite() {
       <p class="hint" style="margin-top: 14px">
         PI = min((T / (T_baseline × số người)) × (CT_baseline / CT), capacity) —
         throughput tăng hoặc cycle time giảm đều làm PI tăng.
-        <b>Số người trong team = số thành viên workspace (hiện tại: {{ people.length || 1 }})</b>.
+        <b>Số người trong team = số thành viên được tính chỉ số (hiện tại: {{ countedPeople || 1 }})</b> —
+        người "👁 quan sát" không được tính.
         Baseline mặc định: T = 4.454810496 task/tháng/người, CT = 6.560209424 ngày/task.
         Chỉ số tính theo tháng dương lịch (mùng 1 → hết tháng).
         <br />
@@ -148,8 +162,17 @@ async function invite() {
           {{ p.Name }}
           <span v-if="p.Name === session?.username" class="hint">(bạn)</span>
           <span v-if="p.locked" class="kb-tag overdue">🔒 đã khóa</span>
+          <span v-if="p.observer" class="kb-tag" title="Không tính vào chỉ số team — chỉ quan sát/quản lý">👁 quan sát</span>
         </span>
         <span style="display: inline-flex; align-items: center; gap: 8px">
+          <button
+            v-if="isOwner"
+            class="btn sm" :class="p.observer ? '' : 'ghost'"
+            :title="p.observer ? 'Tính lại người này vào chỉ số team' : 'Đặt làm người quan sát/quản lý — không tính vào chỉ số team'"
+            @click="toggleObserver(p)"
+          >
+            {{ p.observer ? '📊 Tính chỉ số' : '👁 Chỉ quan sát' }}
+          </button>
           <button
             v-if="isOwner && p.role !== 'owner'"
             class="btn sm" :class="p.locked ? '' : 'ghost-danger'"

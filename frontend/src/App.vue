@@ -76,6 +76,10 @@ async function retryDBDown() {
 }
 
 const loggedIn = computed(() => !!session.value?.userId)
+// Owner của workspace hiện tại — chỉ owner mới vào được trang Cài đặt.
+const isOwner = computed(() => session.value?.role === 'owner')
+// Tab hiển thị trên sidebar: ẩn "Cài đặt" với thành viên không phải owner.
+const visibleTabs = computed(() => tabs.filter(t => t.id !== 'settings' || isOwner.value))
 // Tài khoản khác (để chuyển nhanh) và token của tài khoản đang mở.
 const otherAccounts = computed(() =>
   savedAccounts.value.filter(a => a.userId !== session.value?.userId)
@@ -327,7 +331,7 @@ async function openTaskFromNotif(n) {
       </div>
 
       <button
-        v-for="t in tabs" :key="t.id"
+        v-for="t in visibleTabs" :key="t.id"
         class="nav-item" :class="{ active: tab === t.id }"
         @click="tab = t.id"
       >
@@ -393,7 +397,9 @@ async function openTaskFromNotif(n) {
           @task-opened="pendingTaskId = 0; pendingActivityId = 0"
         />
         <TeamView v-else-if="tab === 'team'" />
-        <SettingsView v-else />
+        <!-- Cài đặt chỉ owner: member (kể cả tự đặt tab=settings) rơi về Dashboard -->
+        <SettingsView v-else-if="tab === 'settings' && isOwner" />
+        <Dashboard v-else />
       </template>
 
       <div v-else class="empty" style="padding-top: 120px">

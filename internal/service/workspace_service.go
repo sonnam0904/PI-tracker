@@ -28,10 +28,11 @@ type WorkspaceInfo struct {
 // Member — thành viên workspace, shape {ID, Name} để frontend dùng chung
 // với mọi chỗ đang hiển thị "nhân sự".
 type Member struct {
-	ID     uint   `json:"ID"`
-	Name   string `json:"Name"`
-	Role   string `json:"role"`
-	Locked bool   `json:"locked"`
+	ID       uint   `json:"ID"`
+	Name     string `json:"Name"`
+	Role     string `json:"role"`
+	Locked   bool   `json:"locked"`
+	Observer bool   `json:"observer"` // chỉ quan sát/quản lý, không tính vào chỉ số
 }
 
 // Create tạo workspace, gán owner làm thành viên đầu tiên. Workspace ĐẦU TIÊN
@@ -97,7 +98,7 @@ func (s *WorkspaceService) IsMember(wsID, userID uint) (bool, error) {
 func (s *WorkspaceService) Members(wsID uint) ([]Member, error) {
 	var members []Member
 	err := s.db.Model(&models.WorkspaceMember{}).
-		Select("users.id as id, users.username as name, workspace_members.role, workspace_members.locked").
+		Select("users.id as id, users.username as name, workspace_members.role, workspace_members.locked, workspace_members.observer").
 		Joins("JOIN users ON users.id = workspace_members.user_id").
 		Where("workspace_members.workspace_id = ?", wsID).
 		Order("users.username").
@@ -162,6 +163,27 @@ func (s *WorkspaceService) SetMemberLock(wsID, actorID, targetID uint, locked bo
 			UserID: targetID, Kind: "info", Content: content,
 		}).Error
 	})
+}
+
+// SetMemberObserver bật/tắt cờ "chỉ quan sát" của một thành viên: chỉ owner
+// được thao tác. Áp cho MỌI thành viên (kể cả owner) — owner cũng có thể là
+// người quản lý không nhận task, tự loại mình khỏi chỉ số team.
+func (s *WorkspaceService) SetMemberObserver(wsID, actorID, targetID uint, observer bool) error {
+	var actor models.WorkspaceMember
+	if err := s.db.Where("workspace_id = ? AND user_id = ?", wsID, actorID).First(&actor).Error; err != nil {
+		return fmt.Errorf("bạn không phải thành viên workspace này")
+	}
+	if actor.Role != "owner" {
+		return fmt.Errorf("chỉ owner mới được đổi chế độ quan sát của thành viên")
+	}
+	var target models.WorkspaceMember
+	if err := s.db.Where("workspace_id = ? AND user_id = ?", wsID, targetID).First(&target).Error; err != nil {
+		return fmt.Errorf("không tìm thấy thành viên id %d trong workspace", targetID)
+	}
+	if target.Observer == observer {
+		return nil // đã ở đúng trạng thái, không cần đổi
+	}
+	return s.db.Model(&target).Update("observer", observer).Error
 }
 
 // MemberNames trả về map userID → username của workspace.

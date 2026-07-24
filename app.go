@@ -444,6 +444,22 @@ func (a *App) requireWorkspace() (uint, error) {
 	return wsID, nil
 }
 
+// requireOwner như requireWorkspace nhưng thêm điều kiện phải là OWNER — dùng
+// chặn ở backend cho các thao tác quản trị (settings, đổi chế độ observer).
+func (a *App) requireOwner() (uint, error) {
+	wsID, err := a.requireWorkspace()
+	if err != nil {
+		return 0, err
+	}
+	a.mu.Lock()
+	role := a.wsRole
+	a.mu.Unlock()
+	if role != "owner" {
+		return 0, fmt.Errorf("chỉ owner của workspace mới có quyền này")
+	}
+	return wsID, nil
+}
+
 func (a *App) actorName() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -661,6 +677,20 @@ func (a *App) SetMemberLock(userID uint, locked bool) error {
 		return err
 	}
 	return a.workspaces.SetMemberLock(wsID, uid, userID, locked)
+}
+
+// SetMemberObserver bật/tắt chế độ "chỉ quan sát" cho thành viên (owner-only,
+// service kiểm tra lại quyền). Observer không tính vào baseline PI của team.
+func (a *App) SetMemberObserver(userID uint, observer bool) error {
+	uid, err := a.requireUser()
+	if err != nil {
+		return err
+	}
+	wsID, err := a.requireWorkspace()
+	if err != nil {
+		return err
+	}
+	return a.workspaces.SetMemberObserver(wsID, uid, userID, observer)
 }
 
 // ListPeople trả về thành viên workspace hiện tại (shape {ID, Name} như cũ
@@ -1508,7 +1538,8 @@ func (a *App) GetSettings() (models.Settings, error) {
 }
 
 func (a *App) SaveSettings(st models.Settings) error {
-	wsID, err := a.requireWorkspace()
+	// Cài đặt workspace chỉ owner được sửa (member không truy cập trang này).
+	wsID, err := a.requireOwner()
 	if err != nil {
 		return err
 	}
@@ -1697,6 +1728,9 @@ func (a *App) GetTeamMetrics(month, asOf string) (TeamMetricsResult, error) {
 		return TeamMetricsResult{}, err
 	}
 	for _, p := range members {
+		if p.Observer {
+			continue // người quan sát/quản lý không hiện ở bảng so sánh chỉ số
+		}
 		mm, _, err := a.metrics.Compute(wsID, m, now, p.ID)
 		if err != nil {
 			return TeamMetricsResult{}, err
