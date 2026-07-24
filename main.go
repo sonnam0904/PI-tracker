@@ -3,11 +3,14 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/logger"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 
 	"taskmanager/internal/config"
 	"taskmanager/internal/database"
@@ -16,6 +19,19 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// appIcon là icon cửa sổ (dùng cho Linux — Windows nhúng icon.ico, macOS bundle
+// .app tự lấy từ appicon.png). Nhúng để cửa sổ/taskbar có icon ngay cả khi chạy
+// binary trực tiếp, không chỉ khi cài qua .deb/.rpm.
+//
+//go:embed build/appicon.png
+var appIcon []byte
+
+// envExample là nội dung .env.example nhúng sẵn, dùng để seed vào thư mục dữ
+// liệu (~/.pi-tracker) khi cài đặt — người dùng copy sang .env để cấu hình.
+//
+//go:embed .env.example
+var envExample string
+
 // Version là phiên bản app, nhúng lúc build qua ldflags:
 //
 //	wails build -ldflags "-X main.Version=1.2.3"
@@ -23,7 +39,43 @@ var assets embed.FS
 // Bản dev để "dev" — updater sẽ bỏ qua việc kiểm tra khi ở giá trị này.
 var Version = "dev"
 
+// setupDataDir chuyển thư mục làm việc về ~/.pi-tracker cho bản CÀI ĐẶT (release)
+// để .env và database SQLite (đều là đường dẫn tương đối) nằm cố định một chỗ,
+// không phụ thuộc CWD lúc mở app từ menu. Seed sẵn .env.example vào đó.
+//
+// Bản dev (Version=="dev", chạy `wails dev` / build/bin) GIỮ NGUYÊN CWD để tiện
+// phát triển với .env và taskmanager.db trong repo.
+func setupDataDir() {
+	if Version == "dev" {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		log.Printf("không xác định được thư mục home, giữ CWD hiện tại: %v", err)
+		return
+	}
+	dir := filepath.Join(home, ".pi-tracker")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("không tạo được thư mục dữ liệu %s: %v", dir, err)
+		return
+	}
+	// Chỉ tạo .env.example nếu chưa có — không đè bản người dùng có thể đã sửa.
+	exPath := filepath.Join(dir, ".env.example")
+	if _, err := os.Stat(exPath); os.IsNotExist(err) {
+		if err := os.WriteFile(exPath, []byte(envExample), 0o644); err != nil {
+			log.Printf("không ghi được %s: %v", exPath, err)
+		}
+	}
+	if err := os.Chdir(dir); err != nil {
+		log.Printf("không chuyển được vào thư mục dữ liệu %s: %v", dir, err)
+	}
+}
+
 func main() {
+	// Đặt thư mục dữ liệu TRƯỚC khi đọc cấu hình / mở DB (cả hai dùng đường dẫn
+	// tương đối theo CWD).
+	setupDataDir()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -48,6 +100,12 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 13, G: 17, B: 23, A: 1},
 		OnStartup:        app.startup,
+		// Icon + tên chương trình cho cửa sổ/taskbar Linux (ProgramName khớp
+		// StartupWMClass trong task-manager.desktop để gom đúng icon trên taskbar).
+		Linux: &linux.Options{
+			Icon:        appIcon,
+			ProgramName: "task-manager",
+		},
 		// Chạy im khi mở từ terminal: chỉ in lỗi, bỏ log INFO khởi động của Wails.
 		LogLevel:           logger.ERROR,
 		LogLevelProduction: logger.ERROR,

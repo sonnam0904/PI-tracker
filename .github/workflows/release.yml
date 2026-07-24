@@ -98,6 +98,22 @@ jobs:
           cp .env.example build/bin/
           tar -C build/bin -czf "${{ matrix.asset }}" task-manager .env.example
 
+      # Đóng gói cài đặt desktop: .deb (Debian/Ubuntu) + .rpm (Fedora) qua nfpm
+      # — cài đặt binary vào /usr/bin, kèm desktop entry + icon (hiện trong menu).
+      - name: Package Linux installers (.deb & .rpm)
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          mkdir -p dist
+          nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+          nfpm package -f packaging/nfpm.yaml -p rpm -t dist/
+          ls -1 dist
+          gh release upload "${{ needs.release.outputs.tag }}" dist/*.deb dist/*.rpm --clobber
+
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |

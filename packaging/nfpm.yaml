@@ -1,0 +1,46 @@
+# Cấu hình nfpm (https://nfpm.goreleaser.com) — dựng CẢ .deb (Debian/Ubuntu)
+# lẫn .rpm (Fedora) từ một file. Chạy sau `wails build` (đã có build/bin/task-manager):
+#   APP_VERSION=1.2.3 nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+#   APP_VERSION=1.2.3 nfpm package -f packaging/nfpm.yaml -p rpm -t dist/
+# nfpm tự thay ${APP_VERSION} bằng biến môi trường cùng tên.
+name: task-manager
+arch: amd64 # nfpm tự map sang x86_64 cho rpm
+platform: linux
+version: ${APP_VERSION}
+release: "1"
+section: utils
+priority: optional
+maintainer: sonnn <sonnguyennam@vccorp.vn>
+vendor: sonnn
+homepage: https://github.com/sonnam0904/PI-tracker
+license: MIT
+description: |
+  PI Tracker — ứng dụng desktop quản lý task cho team dev và theo dõi
+  Performance Index (PI) theo tháng (throughput, cycle time, lead time, WIP).
+
+contents:
+  # Binary → /usr/bin để chạy được từ menu ứng dụng và dòng lệnh.
+  - src: ./build/bin/task-manager
+    dst: /usr/bin/task-manager
+    file_info:
+      mode: 0755
+  # Desktop entry → hiện trong menu ứng dụng của desktop environment.
+  - src: ./packaging/task-manager.desktop
+    dst: /usr/share/applications/task-manager.desktop
+  # Icon → /usr/share/pixmaps (fallback được mọi DE nhận, không cần đúng size
+  # theo hicolor) + hicolor để GNOME/KDE ưu tiên bản theo theme.
+  - src: ./build/appicon.png
+    dst: /usr/share/pixmaps/task-manager.png
+  - src: ./build/appicon.png
+    dst: /usr/share/icons/hicolor/512x512/apps/task-manager.png
+
+# Phụ thuộc runtime theo từng hệ (bản build dùng WebKitGTK 4.1 qua tag webkit2_41):
+overrides:
+  deb:
+    depends:
+      - libgtk-3-0
+      - libwebkit2gtk-4.1-0
+  rpm:
+    depends:
+      - gtk3
+      - webkit2gtk4.1

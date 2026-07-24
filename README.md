@@ -12,6 +12,22 @@ Tải file thực thi mới nhất cho hệ điều hành của bạn tại tran
 
 Giải nén và chạy. Đặt file `.env` cùng thư mục với app để cấu hình DB / AI (xem [Cấu hình](#️-cấu-hình-env)). Mặc định dùng SQLite nên chạy được ngay không cần server DB.
 
+**Linux — cài như ứng dụng desktop:** mỗi release có kèm gói `.deb` (Debian/Ubuntu) và `.rpm` (Fedora). Cài xong app xuất hiện trong menu ứng dụng (có icon), chạy được từ dòng lệnh bằng `task-manager`:
+
+```bash
+# Debian/Ubuntu
+sudo apt install ./task-manager_<ver>_amd64.deb
+# Fedora
+sudo dnf install ./task-manager-<ver>.x86_64.rpm
+```
+
+Bản cài đặt (release) dùng thư mục **`~/.pi-tracker/`** làm nơi lưu dữ liệu & cấu hình:
+- Lần chạy đầu tự tạo thư mục và đặt sẵn `~/.pi-tracker/.env.example`.
+- Cần cấu hình Postgres/MySQL hoặc AI: copy `~/.pi-tracker/.env.example` → `~/.pi-tracker/.env` rồi sửa.
+- Mặc định dùng SQLite → DB nằm ở `~/.pi-tracker/taskmanager.db`.
+
+Biến môi trường thật vẫn được ưu tiên hơn `.env` (tiện cho deploy). Bản dev (`wails dev`) giữ nguyên `.env`/DB trong thư mục repo.
+
 ### Cách 2 — Build từ source
 
 **Yêu cầu môi trường:**

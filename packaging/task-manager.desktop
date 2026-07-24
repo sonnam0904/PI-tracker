@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PI Tracker
+GenericName=Task Manager
+Comment=Quản lý task cho team dev & theo dõi Performance Index (PI) theo tháng
+Exec=task-manager
+Icon=task-manager
+Terminal=false
+Categories=Office;ProjectManagement;Development;
+Keywords=task;pi;tracker;project;kanban;gantt;
+StartupNotify=true
+StartupWMClass=task-manager
