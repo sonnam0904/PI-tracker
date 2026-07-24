@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/logger"
@@ -72,6 +73,15 @@ func setupDataDir() {
 }
 
 func main() {
+	// WebKitGTK trên nhiều GPU/driver/VM Linux render ra MÀN TRẮNG do bug DMABUF
+	// renderer. Tắt nó là cách khắc phục chuẩn cho Wails trên Linux. Đặt TRƯỚC
+	// khi webview khởi tạo (trước wails.Run) và chỉ khi người dùng chưa tự đặt.
+	if runtime.GOOS == "linux" {
+		if _, ok := os.LookupEnv("WEBKIT_DISABLE_DMABUF_RENDERER"); !ok {
+			_ = os.Setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+		}
+	}
+
 	// Đặt thư mục dữ liệu TRƯỚC khi đọc cấu hình / mở DB (cả hai dùng đường dẫn
 	// tương đối theo CWD).
 	setupDataDir()
