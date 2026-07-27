@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/sonnam0904/PI-tracker/compare/v1.6.1...v1.7.0) (2026-07-27)
+
+
+### Features
+
+* implement workspace data synchronization and notification enhancements in realtime ([8d6adbb](https://github.com/sonnam0904/PI-tracker/commit/8d6adbbe0c7bf863118cbfce8108c8b6c1396c3b))
+
 ## [1.6.1](https://github.com/sonnam0904/PI-tracker/compare/v1.6.0...v1.6.1) (2026-07-27)
 
 
