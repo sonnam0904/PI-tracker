@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/sonnam0904/PI-tracker/compare/v1.5.1...v1.6.0) (2026-07-27)
+
+
+### Features
+
+* remove AI estimation feature and related tests, new MCP feature ([72350c5](https://github.com/sonnam0904/PI-tracker/commit/72350c5963002607101fa809433b9192dd9d6c87))
+
 ## [1.5.1](https://github.com/sonnam0904/PI-tracker/compare/v1.5.0...v1.5.1) (2026-07-24)
 
 
