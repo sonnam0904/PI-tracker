@@ -14,6 +14,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -295,10 +296,26 @@ func readZipFile(f *zip.File) ([]byte, error) {
 	return io.ReadAll(rc)
 }
 
-// replaceExecutable ghi binary mới vào cùng thư mục với exe rồi rename đè —
-// cùng filesystem nên rename là thao tác nguyên tử. Windows không cho ghi đè
-// file đang chạy, nên đổi tên file hiện tại sang .old trước.
+// replaceExecutable thay file thực thi đang chạy bằng binary mới. Thử ghi tại
+// chỗ trước (đủ quyền khi cài ở thư mục user-writable như ~/.local/bin hay
+// AppImage); nếu thư mục cài thuộc root (vd /usr/bin) làm bước ghi trả lỗi quyền
+// thì Linux nâng quyền qua pkexec (hộp mật khẩu polkit của desktop) để đè binary.
 func replaceExecutable(exe string, newBin []byte) error {
+	err := replaceInPlace(exe, newBin)
+	if err == nil {
+		return nil
+	}
+	// Chỉ escalate trên Linux khi đúng là lỗi thiếu quyền ghi vào thư mục cài.
+	if runtime.GOOS == "linux" && errors.Is(err, os.ErrPermission) {
+		return replaceViaPkexec(exe, newBin)
+	}
+	return err
+}
+
+// replaceInPlace ghi binary mới vào cùng thư mục với exe rồi rename đè — cùng
+// filesystem nên rename là thao tác nguyên tử. Windows không cho ghi đè file
+// đang chạy, nên đổi tên file hiện tại sang .old trước.
+func replaceInPlace(exe string, newBin []byte) error {
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".update-*")
 	if err != nil {
@@ -337,6 +354,44 @@ func replaceExecutable(exe string, newBin []byte) error {
 	if err := os.Rename(tmpName, exe); err != nil {
 		os.Remove(tmpName)
 		return err
+	}
+	return nil
+}
+
+// replaceViaPkexec nâng quyền để đè file thực thi thuộc root (vd cài ở /usr/bin).
+// Ghi binary mới ra file tạm user-writable rồi nhờ `install -m 0755` chạy dưới
+// pkexec sao chép + đặt quyền nguyên tử vào đúng vị trí exe. pkexec bật hộp thoại
+// xác thực polkit của desktop; nếu không có pkexec hoặc user hủy/không đủ quyền
+// thì trả lỗi rõ ràng để UI hướng dẫn cập nhật thủ công.
+func replaceViaPkexec(exe string, newBin []byte) error {
+	pkexec, err := exec.LookPath("pkexec")
+	if err != nil {
+		return fmt.Errorf("cần quyền quản trị để ghi vào %s nhưng máy không có pkexec — hãy cập nhật thủ công từ GitHub Releases", filepath.Dir(exe))
+	}
+	install, err := exec.LookPath("install")
+	if err != nil {
+		return fmt.Errorf("cần quyền quản trị để cập nhật nhưng không tìm thấy lệnh install — hãy cập nhật thủ công từ GitHub Releases")
+	}
+
+	// File tạm ở thư mục tạm hệ thống (user ghi được; root đọc được khi copy).
+	tmp, err := os.CreateTemp("", "pi-tracker-update-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(newBin); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	cmd := exec.Command(pkexec, install, "-m", "0755", tmpName, exe)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("cập nhật với quyền quản trị thất bại (pkexec) — thử lại hoặc cập nhật thủ công từ GitHub Releases: %w", err)
 	}
 	return nil
 }
