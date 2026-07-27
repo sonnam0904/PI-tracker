@@ -1,3 +1,10 @@
+## [1.6.1](https://github.com/sonnam0904/PI-tracker/compare/v1.6.0...v1.6.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* enhance executable replacement process on Linux ([b298d5e](https://github.com/sonnam0904/PI-tracker/commit/b298d5eb3845804267a255347f73af2abd5fc90d))
+
 # [1.6.0](https://github.com/sonnam0904/PI-tracker/compare/v1.5.1...v1.6.0) (2026-07-27)
 
 
