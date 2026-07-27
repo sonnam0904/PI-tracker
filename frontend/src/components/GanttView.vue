@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import {
   ListTasks, ListPeople, ListSavedViews, CreateSavedView, UpdateSavedView, DeleteSavedView,
 } from '../../wailsjs/go/main/App'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { monthStart, addMonths, daysInMonth, monthLabel, parseISODate, daysBetween } from '../lib/date'
 import { buildPeopleMeta, UNASSIGNED_COLOR } from '../lib/people'
 import { isBug } from '../lib/taskTypes'
@@ -120,12 +121,35 @@ function maybeOpenRequested() {
   emitEvents('task-opened')
 }
 
+// Đồng bộ realtime khi client khác sửa dữ liệu: nạp lại danh sách task tại chỗ
+// (giữ vị trí scroll — load() không đụng scroll). Với saved view: ƯU TIÊN REMOTE
+// — nếu định nghĩa view đang mở bị sửa từ xa thì ÁP DỤNG ngay (đồng bộ lại config,
+// không hiện cờ "đã đổi"); nếu view bị xóa từ xa thì về tab "Tất cả". Thay đổi
+// dữ liệu thuần (không đụng view) thì GIỮ nguyên config để không phá filter đang xem.
+async function onRemoteChange() {
+  const prevFilters = activeView.value?.filters
+  await load()
+  if (activeViewId.value === 0) return // tab "Tất cả": không có config đã lưu
+  if (!activeView.value) {
+    selectView(0) // view đang mở đã bị xóa từ xa
+    return
+  }
+  if (activeView.value.filters !== prevFilters) {
+    config.value = parseConfig(activeView.value.filters) // định nghĩa view đổi từ xa → áp dụng
+  }
+}
+
+// Dùng hàm hủy do EventsOn trả về để chỉ gỡ listener này, tránh xóa nhầm
+// listener của TaskModal đang lồng bên trong (cùng nghe "tasks:changed").
+let stopLiveSync = null
 onMounted(async () => {
   await load()
   maybeOpenRequested()
   await nextTick()
   measureHead()
+  stopLiveSync = EventsOn('tasks:changed', onRemoteChange)
 })
+onUnmounted(() => stopLiveSync && stopLiveSync())
 watch(() => props.openTaskId, maybeOpenRequested)
 // Header chỉ tồn tại khi ở Timeline — đo lại khi chuyển về view này.
 watch(view, v => { if (v === 'timeline') nextTick(measureHead) })

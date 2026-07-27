@@ -635,6 +635,151 @@ func TestTodoMutationCrossWorkspace(t *testing.T) {
 	}
 }
 
+// Fingerprint workspace phải đổi sau MỌI loại thay đổi (tạo/sửa/xóa task,
+// checklist, bình luận) để poller đồng bộ realtime bắn "tasks:changed". Checklist
+// và bình luận không đụng tasks.updated_at nên phải nhờ activity id lo phần đó.
+func TestWorkspaceFingerprintChanges(t *testing.T) {
+	app := testApp(t)
+	loginApp(t, app, "alice")
+	wsID := app.GetSession().WorkspaceID
+	uid := app.GetSession().UserID
+
+	fp := func(step string) string {
+		s, err := app.workspaceFingerprint(wsID, uid)
+		if err != nil {
+			t.Fatalf("fingerprint (%s): %v", step, err)
+		}
+		return s
+	}
+
+	prev := fp("khởi đầu")
+	assertChanged := func(step string) {
+		cur := fp(step)
+		if cur == prev {
+			t.Fatalf("%s phải làm đổi fingerprint (vẫn %q)", step, cur)
+		}
+		prev = cur
+	}
+
+	if err := app.SaveTask(TaskDTO{Title: "t1", Status: "Todo"}); err != nil {
+		t.Fatalf("tạo task: %v", err)
+	}
+	assertChanged("tạo task")
+
+	list, _ := app.ListTasks()
+	id := list[0].ID
+
+	d := list[0]
+	d.Title = "t1-đã-sửa"
+	if err := app.SaveTask(d); err != nil {
+		t.Fatalf("sửa task: %v", err)
+	}
+	assertChanged("sửa task")
+
+	if err := app.AddTodo(id, "việc"); err != nil {
+		t.Fatalf("thêm checklist: %v", err)
+	}
+	assertChanged("thêm checklist")
+
+	if err := app.AddComment(id, "một bình luận", 0); err != nil {
+		t.Fatalf("bình luận: %v", err)
+	}
+	assertChanged("bình luận")
+
+	if err := app.DeleteTask(id); err != nil {
+		t.Fatalf("xóa task: %v", err)
+	}
+	assertChanged("xóa task")
+
+	// Saved view: tạo/sửa bộ lọc/đổi tên/xóa đều phải làm đổi fingerprint (đồng
+	// bộ tab lọc realtime, kể cả khi cùng user đăng nhập ở nhiều client).
+	v, err := app.CreateSavedView("view A", `{"status":["Todo"]}`)
+	if err != nil {
+		t.Fatalf("tạo view: %v", err)
+	}
+	assertChanged("tạo saved view")
+
+	if _, err := app.UpdateSavedView(v.ID, "view A", `{"status":["Done"]}`); err != nil {
+		t.Fatalf("sửa bộ lọc view: %v", err)
+	}
+	assertChanged("sửa bộ lọc view")
+
+	if _, err := app.UpdateSavedView(v.ID, "view A đổi tên", `{"status":["Done"]}`); err != nil {
+		t.Fatalf("đổi tên view: %v", err)
+	}
+	assertChanged("đổi tên view")
+
+	if err := app.DeleteSavedView(v.ID); err != nil {
+		t.Fatalf("xóa view: %v", err)
+	}
+	assertChanged("xóa saved view")
+}
+
+// primeDataBaseline (chạy khi vào/đổi workspace qua SelectWorkspace) phải chụp
+// đúng fingerprint hiện tại làm mốc, để nhịp poll đầu tiên phát hiện được thay
+// đổi của client khác thay vì nuốt vào baseline (khe hở [nạp, nhịp đầu]).
+func TestPrimeDataBaselineCapturesFingerprint(t *testing.T) {
+	app := testApp(t)
+	loginApp(t, app, "alice") // Register + CreateWorkspace → SelectWorkspace → primeDataBaseline
+	wsID := app.GetSession().WorkspaceID
+	uid := app.GetSession().UserID
+
+	// Sau prime, baseline (dataWsID/dataFP) phải khớp workspace + fingerprint hiện tại.
+	fp0, err := app.workspaceFingerprint(wsID, uid)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	app.dataMu.Lock()
+	baseWs, base := app.dataWsID, app.dataFP
+	app.dataMu.Unlock()
+	if baseWs != wsID || base != fp0 {
+		t.Fatalf("prime chưa set mốc đúng: dataWsID=%d dataFP=%q, muốn %d/%q", baseWs, base, wsID, fp0)
+	}
+
+	// "Client khác" tạo task ngay sau khi vào workspace → fingerprint khác mốc,
+	// nên nhịp poll đầu tiên sẽ phát hiện (không còn bị nuốt vào baseline).
+	if err := app.SaveTask(TaskDTO{Title: "từ client khác", Status: "Todo"}); err != nil {
+		t.Fatalf("tạo task: %v", err)
+	}
+	fp1, err := app.workspaceFingerprint(wsID, uid)
+	if err != nil {
+		t.Fatalf("fingerprint sau: %v", err)
+	}
+	if fp1 == base {
+		t.Fatal("fingerprint sau thay đổi phải khác mốc — nếu bằng, poll sẽ bỏ lỡ")
+	}
+}
+
+// primeNotifBaseline (chạy khi đăng nhập) phải chốt mốc thông báo ngay, để
+// thông báo mới ngay sau đăng nhập được phát hiện thay vì bị nuốt làm baseline
+// (nhịp NOTIFY/poll đầu tiên trên Postgres).
+func TestPrimeNotifBaselineCapturesMax(t *testing.T) {
+	app := testApp(t)
+	loginApp(t, app, "alice") // Register → setUser → primeNotifBaseline
+	uid := app.GetSession().UserID
+
+	app.notifMu.Lock()
+	baseUser, baseID := app.notifUserID, app.notifLastID
+	app.notifMu.Unlock()
+	if baseUser != uid {
+		t.Fatalf("prime chưa chốt mốc: notifUserID=%d, muốn %d", baseUser, uid)
+	}
+
+	// "Client khác" tạo thông báo cho alice ngay sau đăng nhập.
+	if _, err := app.notifications.Create(models.Notification{
+		UserID: uid, Kind: "mention", Content: "nhắc bạn",
+	}); err != nil {
+		t.Fatalf("tạo notif: %v", err)
+	}
+	fresh, err := app.notifications.NewerThan(uid, baseID)
+	if err != nil {
+		t.Fatalf("NewerThan: %v", err)
+	}
+	if len(fresh) != 1 {
+		t.Fatalf("phải phát hiện 1 thông báo mới hơn mốc, có %d — nhịp đầu sẽ bị nuốt nếu 0", len(fresh))
+	}
+}
+
 // Khóa/mở khóa thành viên: chỉ owner, không khóa owner, thành viên bị khóa
 // không thao tác được trong workspace nhưng vẫn xem được thông báo,
 // và nhận notification khi bị khóa/mở khóa.
@@ -832,8 +977,15 @@ func TestOSNotifications(t *testing.T) {
 	loginApp(t, app, "giang")
 	uid := app.GetSession().UserID
 
-	// Backlog tồn tại TRƯỚC nhịp poll đầu tiên: chỉ baseline, không notify.
+	// Backlog tồn tại TRƯỚC khi phiên chốt mốc: đăng xuất, tạo backlog, rồi đăng
+	// nhập lại — primeNotifBaseline chốt mốc GỒM cả backlog nên KHÔNG notify.
+	// (Mốc chốt ngay lúc đăng nhập, không đợi nhịp poll đầu.)
+	app.Logout("")
+	app.checkNewNotifications() // uid==0 → reset mốc
 	db.Create(&models.Notification{UserID: uid, Kind: "info", Content: "thông báo cũ"})
+	if _, err := app.Login("giang", "secret123"); err != nil {
+		t.Fatalf("login lại: %v", err)
+	}
 	app.checkNewNotifications()
 	if len(got) != 0 {
 		t.Fatalf("backlog cũ không được notify, nhận: %v", got)

@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { GetMetrics, ExportReport, ListPeople } from '../../wailsjs/go/main/App'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { monthStart, addMonths, ymKey, monthLabel, parseISODate, fmtDM, todayISO } from '../lib/date'
 
 const month = ref(monthStart(new Date()))
@@ -23,6 +24,9 @@ async function load() {
     error.value = String(e)
   }
 }
+// Đồng bộ realtime: client khác sửa dữ liệu workspace → backend bắn
+// "tasks:changed" → nạp lại số liệu tại chỗ (giữ nguyên tháng/bộ lọc đang xem).
+let stopLiveSync = null
 onMounted(async () => {
   try {
     people.value = await ListPeople()
@@ -30,7 +34,9 @@ onMounted(async () => {
     error.value = String(e)
   }
   await load()
+  stopLiveSync = EventsOn('tasks:changed', load)
 })
+onUnmounted(() => stopLiveSync && stopLiveSync())
 
 const assigneeName = computed(() => {
   const p = people.value.find(p => p.ID === assigneeId.value)

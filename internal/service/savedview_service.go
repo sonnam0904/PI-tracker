@@ -2,6 +2,8 @@ package service
 
 import (
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -70,4 +72,21 @@ func (s *SavedViewService) Update(id uint, name, filters string) (models.SavedVi
 
 func (s *SavedViewService) Delete(id uint) error {
 	return s.db.Delete(&models.SavedView{}, id).Error
+}
+
+// Fingerprint tạo dấu vân tay cho toàn bộ view của (workspace, user): bắt tạo,
+// xóa, đổi tên, sửa bộ lọc và đổi thứ tự tab. View mỗi user chỉ vài cái nên nạp
+// rồi băm nội dung (id + vị trí + tên + filters) là rẻ và chạy được trên mọi
+// driver — tránh phụ thuộc MAX(updated_at) vốn scan lệch kiểu trên sqlite.
+func (s *SavedViewService) Fingerprint(wsID, userID uint) (string, error) {
+	views, err := s.List(wsID, userID)
+	if err != nil {
+		return "", err
+	}
+	h := fnv.New64a()
+	for _, v := range views {
+		// \x1f ngăn field, \x1e ngăn bản ghi — tránh nhập nhằng khi nối chuỗi.
+		fmt.Fprintf(h, "%d\x1f%d\x1f%s\x1f%s\x1e", v.ID, v.Position, v.Name, v.Filters)
+	}
+	return strconv.FormatUint(h.Sum64(), 36), nil
 }

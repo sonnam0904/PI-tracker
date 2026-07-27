@@ -34,6 +34,23 @@ func (s *TaskService) Save(task *models.Task) error {
 	return s.db.Save(task).Error
 }
 
+// Fingerprint trả về (số task, id task lớn nhất) của một workspace — tín hiệu rẻ
+// để poll phát hiện thay đổi cho đồng bộ realtime. COUNT bắt tạo/xóa, MAX(id)
+// bắt tạo mới. Dùng thuần số nguyên (không MAX(updated_at)) để scan an toàn trên
+// cả sqlite/postgres/mysql; phần "task bị sửa nội dung" đã do MAX(activities.id)
+// lo (mọi lần sửa đều ghi một dòng activity).
+func (s *TaskService) Fingerprint(wsID uint) (count int64, maxID int64, err error) {
+	var row struct {
+		N     int64
+		MaxID int64
+	}
+	err = s.db.Model(&models.Task{}).
+		Select("COUNT(*) AS n, COALESCE(MAX(id), 0) AS max_id").
+		Where("workspace_id = ?", wsID).
+		Scan(&row).Error
+	return row.N, row.MaxID, err
+}
+
 func (s *TaskService) Delete(id uint) error {
 	return s.db.Delete(&models.Task{}, id).Error
 }

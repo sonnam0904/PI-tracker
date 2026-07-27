@@ -74,6 +74,12 @@ type App struct {
 	notifMu     sync.Mutex
 	notifUserID uint
 	notifLastID uint
+
+	// Trạng thái poller đồng bộ dữ liệu: workspace đang theo dõi + fingerprint
+	// lần quét trước. Fingerprint đổi = client khác vừa sửa dữ liệu workspace.
+	dataMu   sync.Mutex
+	dataWsID uint
+	dataFP   string
 }
 
 func NewApp(db *gorm.DB) *App {
@@ -119,6 +125,9 @@ func (a *App) attachDB(db *gorm.DB) {
 	a.statuses = service.NewStatusService(db)
 	a.auth = service.NewAuthService(db)
 	a.notifications = service.NewNotificationService(db)
+	// Có notification mới → phát Postgres NOTIFY để client khác refresh chuông
+	// ngay (no-op nếu không phải Postgres — driver khác dựa vào poll 10s).
+	a.notifications.SetOnCreate(a.notifyNotifBroadcast)
 	a.savedViews = service.NewSavedViewService(db)
 	a.dependencies = service.NewDependencyService(db)
 }
@@ -242,6 +251,7 @@ func (a *App) RetryDB() error {
 	if a.ctx != nil {
 		go a.watchNotifications(a.ctx)
 		go a.watchDueTasks(a.ctx)
+		a.startDataSync(a.ctx)
 	}
 	return nil
 }
@@ -271,6 +281,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	go a.watchNotifications(ctx)
 	go a.watchDueTasks(ctx)
+	a.startDataSync(ctx)
 }
 
 // shutdown chạy khi app đóng: tắt MCP server nếu đang bật để nhả cổng localhost.
@@ -286,6 +297,34 @@ func (a *App) shutdown(ctx context.Context) {
 // notifPollInterval — nhịp quét thông báo mới trong DB. Thông báo do instance
 // của user khác ghi vào DB chung, nên phải poll chứ không có push.
 const notifPollInterval = 10 * time.Second
+
+// primeNotifBaseline chụp MỐC thông báo (ID lớn nhất hiện tại của user) NGAY khi
+// đăng nhập, để nhịp NOTIFY/poll đầu tiên so với mốc này và báo được thông báo
+// mới — tránh nhịp đầu bị "nuốt" làm baseline (mất realtime cho invite/mention
+// ngay sau đăng nhập, nhất là trên Postgres khi NOTIFY tới trước nhịp poll 10s).
+// Backlog cũ vẫn không spam vì đã nằm dưới mốc. Cùng logic baseline với
+// checkNewNotifications, chỉ khác là chạy chủ động sớm.
+func (a *App) primeNotifBaseline() {
+	if !a.dbReady() {
+		return
+	}
+	a.mu.Lock()
+	uid := a.userID
+	a.mu.Unlock()
+	if uid == 0 {
+		return
+	}
+	a.notifMu.Lock()
+	defer a.notifMu.Unlock()
+	if uid == a.notifUserID {
+		return // đã có mốc cho user này
+	}
+	maxID, err := a.notifications.MaxID(uid)
+	if err != nil {
+		return
+	}
+	a.notifUserID, a.notifLastID = uid, maxID
+}
 
 // watchNotifications chạy nền suốt vòng đời app: phát hiện thông báo mới của
 // user đang đăng nhập và đẩy ra Hệ điều hành, kể cả khi cửa sổ đang ở nền.
@@ -352,6 +391,96 @@ func (a *App) checkNewNotifications() {
 	if a.ctx != nil {
 		wruntime.EventsEmit(a.ctx, "notifications:new")
 	}
+}
+
+// dataPollInterval — nhịp quét thay đổi dữ liệu workspace (task/checklist/bình
+// luận…) do client khác ghi vào DB chung. Không có push nên phải poll.
+const dataPollInterval = 5 * time.Second
+
+// watchWorkspaceData chạy nền suốt vòng đời app: phát hiện dữ liệu workspace
+// hiện tại đổi (client khác vừa sửa) và báo frontend nạp lại tại chỗ.
+func (a *App) watchWorkspaceData(ctx context.Context) {
+	t := time.NewTicker(dataPollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			a.checkWorkspaceData()
+		}
+	}
+}
+
+// checkWorkspaceData là một nhịp poll: tính fingerprint rẻ của workspace hiện
+// tại; lần đầu thấy một workspace chỉ ghi baseline (không bắn event vì view sẽ
+// tự nạp khi đổi workspace), các nhịp sau nếu fingerprint đổi thì báo frontend
+// refresh qua event "tasks:changed".
+// primeDataBaseline chụp fingerprint workspace hiện tại làm MỐC cho poller NGAY
+// khi vào/đổi workspace (cùng thời điểm frontend nạp dữ liệu). Nhờ vậy nhịp poll
+// đầu tiên so với mốc này thay vì tự lấy mốc trễ 5s — không bỏ lỡ thay đổi của
+// client khác trong khoảng [frontend nạp, nhịp poll đầu tiên]. Chỉ cần cho đường
+// poll (sqlite/mysql); Postgres dùng NOTIFY nên bỏ qua để khỏi query thừa.
+func (a *App) primeDataBaseline() {
+	if a.usePgNotify() || !a.dbReady() {
+		return
+	}
+	a.mu.Lock()
+	uid, wsID := a.userID, a.wsID
+	a.mu.Unlock()
+	if uid == 0 || wsID == 0 {
+		return
+	}
+	fp, err := a.workspaceFingerprint(wsID, uid)
+	if err != nil {
+		return
+	}
+	a.dataMu.Lock()
+	a.dataWsID, a.dataFP = wsID, fp
+	a.dataMu.Unlock()
+}
+
+func (a *App) checkWorkspaceData() {
+	a.mu.Lock()
+	uid, wsID := a.userID, a.wsID
+	a.mu.Unlock()
+	if uid == 0 || wsID == 0 || !a.dbReady() {
+		return
+	}
+	fp, err := a.workspaceFingerprint(wsID, uid)
+	if err != nil {
+		return
+	}
+	a.dataMu.Lock()
+	sameWs := wsID == a.dataWsID
+	prev := a.dataFP
+	a.dataWsID, a.dataFP = wsID, fp
+	a.dataMu.Unlock()
+	if sameWs && fp != prev && a.ctx != nil {
+		wruntime.EventsEmit(a.ctx, "tasks:changed")
+	}
+}
+
+// workspaceFingerprint gộp vài đại lượng rẻ để phát hiện MỌI thay đổi dữ liệu
+// mà client hiện tại cần thấy: COUNT + MAX(id) của tasks (bắt tạo/xóa) và
+// MAX(activities.id) — activity là sổ ghi chung nên bắt được sửa task, toggle/
+// thêm/xóa checklist, bình luận, đổi trạng thái; cộng dấu vân tay saved-view của
+// (workspace, user) để bắt tạo/xóa/đổi tên/sửa bộ lọc/đổi thứ tự tab. (Sửa CHỈ
+// phụ thuộc — hiếm — có thể không ghi activity, sẽ đồng bộ ở thay đổi kế tiếp.)
+func (a *App) workspaceFingerprint(wsID, userID uint) (string, error) {
+	n, maxID, err := a.tasks.Fingerprint(wsID)
+	if err != nil {
+		return "", err
+	}
+	actMax, err := a.activities.MaxIDForWorkspace(wsID)
+	if err != nil {
+		return "", err
+	}
+	viewsFP, err := a.savedViews.Fingerprint(wsID, userID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d:%d:%d:%s", n, maxID, actMax, viewsFP), nil
 }
 
 // dueSoonWindow — nhắc trước hạn chót bao lâu; dueCheckInterval — nhịp quét.
@@ -530,6 +659,10 @@ func (a *App) setUser(u models.User) (SessionDTO, error) {
 	a.wsID, a.wsName, a.wsRole = 0, "", ""
 	a.mu.Unlock()
 
+	// Chốt mốc thông báo NGAY sau đăng nhập để nhịp NOTIFY/poll đầu tiên báo
+	// được thông báo mới (không nuốt vào baseline).
+	a.primeNotifBaseline()
+
 	// Tự chọn workspace đầu tiên nếu user đã là thành viên đâu đó.
 	if list, err := a.workspaces.ListForUser(u.ID); err == nil && len(list) > 0 {
 		_ = a.SelectWorkspace(list[0].ID)
@@ -678,6 +811,7 @@ func (a *App) SelectWorkspace(id uint) error {
 			a.mu.Lock()
 			a.wsID, a.wsName, a.wsRole = ws.ID, ws.Name, ws.Role
 			a.mu.Unlock()
+			a.primeDataBaseline()
 			return nil
 		}
 	}
@@ -694,7 +828,14 @@ func (a *App) InviteMember(username string) error {
 	if err != nil {
 		return err
 	}
-	return a.workspaces.Invite(wsID, uid, username, a.notifications)
+	if err := a.workspaces.Invite(wsID, uid, username, a.notifications); err != nil {
+		return err
+	}
+	// Notification lời mời được tạo bằng tx.Create trong service (không qua
+	// NotificationService.Create) nên phải tự báo realtime ở đây, SAU khi tx
+	// commit — người được mời refresh chuông ngay.
+	a.notifyNotifBroadcast()
+	return nil
 }
 
 // SetMemberLock khóa/mở khóa thành viên trong workspace hiện tại (chỉ owner).
@@ -708,7 +849,11 @@ func (a *App) SetMemberLock(userID uint, locked bool) error {
 	if err != nil {
 		return err
 	}
-	return a.workspaces.SetMemberLock(wsID, uid, userID, locked)
+	if err := a.workspaces.SetMemberLock(wsID, uid, userID, locked); err != nil {
+		return err
+	}
+	a.notifyNotifBroadcast() // thành viên bị khóa/mở khóa nhận notif (tạo trong tx)
+	return nil
 }
 
 // SetMemberObserver bật/tắt chế độ "chỉ quan sát" cho thành viên (owner-only,
@@ -767,7 +912,11 @@ func (a *App) RespondInvitation(invitationID uint, accept bool) error {
 	if err != nil {
 		return err
 	}
-	return a.workspaces.Respond(invitationID, uid, accept)
+	if err := a.workspaces.Respond(invitationID, uid, accept); err != nil {
+		return err
+	}
+	a.notifyNotifBroadcast() // báo lại người mời (notif tạo trong tx của service)
+	return nil
 }
 
 // ---------- Saved views (tab bộ lọc trên trang Tasks) ----------
@@ -814,21 +963,35 @@ func (a *App) CreateSavedView(name, filters string) (models.SavedView, error) {
 	if err != nil {
 		return models.SavedView{}, err
 	}
-	return a.savedViews.Create(wsID, uid, name, filters)
+	v, err := a.savedViews.Create(wsID, uid, name, filters)
+	if err == nil {
+		a.notifyChange(wsID, uid, changeView)
+	}
+	return v, err
 }
 
 func (a *App) UpdateSavedView(id uint, name, filters string) (models.SavedView, error) {
-	if _, err := a.savedViewOwned(id); err != nil {
+	owned, err := a.savedViewOwned(id)
+	if err != nil {
 		return models.SavedView{}, err
 	}
-	return a.savedViews.Update(id, name, filters)
+	v, err := a.savedViews.Update(id, name, filters)
+	if err == nil {
+		a.notifyChange(owned.WorkspaceID, owned.UserID, changeView)
+	}
+	return v, err
 }
 
 func (a *App) DeleteSavedView(id uint) error {
-	if _, err := a.savedViewOwned(id); err != nil {
+	owned, err := a.savedViewOwned(id)
+	if err != nil {
 		return err
 	}
-	return a.savedViews.Delete(id)
+	if err := a.savedViews.Delete(id); err != nil {
+		return err
+	}
+	a.notifyChange(owned.WorkspaceID, owned.UserID, changeView)
+	return nil
 }
 
 // ---------- Tasks ----------
@@ -1166,7 +1329,7 @@ func (a *App) SaveTask(dto TaskDTO) error {
 
 	names, _ := a.workspaces.MemberNames(wsID)
 	if old == nil {
-		_ = a.activities.Log(t.ID, a.actorName(), "create", "tạo task")
+		_ = a.activities.Log(wsID, t.ID, a.actorName(), "create", "tạo task")
 		_ = a.statuses.Log(t.ID, "", t.Status, a.actorName())
 		// Checklist tạo sẵn (vd AI gợi ý) chỉ áp khi tạo mới — bỏ mục rỗng.
 		for _, title := range dto.InitialTodos {
@@ -1174,33 +1337,35 @@ func (a *App) SaveTask(dto TaskDTO) error {
 				continue
 			}
 			if item, err := a.todos.Add(t.ID, title); err == nil {
-				_ = a.activities.Log(t.ID, a.actorName(), "todo", "thêm việc: "+item.Title)
+				_ = a.activities.Log(wsID, t.ID, a.actorName(), "todo", "thêm việc: "+item.Title)
 			}
 		}
 	} else {
 		if changes := taskChanges(*old, t, names); len(changes) > 0 {
-			_ = a.activities.Log(t.ID, a.actorName(), "update", strings.Join(changes, "\n"))
+			_ = a.activities.Log(wsID, t.ID, a.actorName(), "update", strings.Join(changes, "\n"))
 		}
 		if old.Status != t.Status {
 			_ = a.statuses.Log(t.ID, old.Status, t.Status, a.actorName())
 		}
 	}
 	if autoBlockedNote != "" {
-		_ = a.activities.Log(t.ID, a.actorName(), "update", autoBlockedNote)
+		_ = a.activities.Log(wsID, t.ID, a.actorName(), "update", autoBlockedNote)
 	}
 	if note := depChangeNote(oldDeps, depIDs); note != "" {
-		_ = a.activities.Log(t.ID, a.actorName(), "update", note)
+		_ = a.activities.Log(wsID, t.ID, a.actorName(), "update", note)
 	}
 	// Đặt/đổi hạn chót có hiệu lực ngay: quét nhắc việc luôn thay vì bắt
 	// người dùng đợi nhịp quét theo giờ (task đã nhắc rồi không nhắc lại).
 	if t.DueDate != nil && t.Status != models.StatusDone {
 		a.checkDueTasks()
 	}
+	a.notifyChange(wsID, 0, changeData)
 	return nil
 }
 
 func (a *App) DeleteTask(id uint) error {
-	if _, _, err := a.taskInWorkspace(id); err != nil {
+	_, wsID, err := a.taskInWorkspace(id)
+	if err != nil {
 		return err
 	}
 	if err := a.tasks.Delete(id); err != nil {
@@ -1210,6 +1375,7 @@ func (a *App) DeleteTask(id uint) error {
 	_ = a.activities.DeleteForTask(id)
 	_ = a.statuses.DeleteForTask(id)
 	_ = a.dependencies.DeleteForTask(id)
+	a.notifyChange(wsID, 0, changeData)
 	return nil
 }
 
@@ -1328,14 +1494,17 @@ func (a *App) ListTodos(taskID uint) ([]models.TodoItem, error) {
 }
 
 func (a *App) AddTodo(taskID uint, title string) error {
-	if _, _, err := a.taskInWorkspace(taskID); err != nil {
+	_, wsID, err := a.taskInWorkspace(taskID)
+	if err != nil {
 		return err
 	}
 	item, err := a.todos.Add(taskID, title)
 	if err != nil {
 		return err
 	}
-	return a.activities.Log(taskID, a.actorName(), "todo", "thêm việc: "+item.Title)
+	err = a.activities.Log(wsID, taskID, a.actorName(), "todo", "thêm việc: "+item.Title)
+	a.notifyChange(wsID, 0, changeData)
+	return err
 }
 
 func (a *App) ToggleTodo(id uint, done bool) error {
@@ -1346,7 +1515,8 @@ func (a *App) ToggleTodo(id uint, done bool) error {
 	if err != nil {
 		return fmt.Errorf("không tìm thấy mục checklist id %d", id)
 	}
-	if _, _, err := a.taskInWorkspace(cur.TaskID); err != nil {
+	_, wsID, err := a.taskInWorkspace(cur.TaskID)
+	if err != nil {
 		return err
 	}
 	item, err := a.todos.SetDone(id, done)
@@ -1357,7 +1527,9 @@ func (a *App) ToggleTodo(id uint, done bool) error {
 	if !done {
 		msg = "bỏ hoàn thành việc: " + item.Title
 	}
-	return a.activities.Log(item.TaskID, a.actorName(), "todo", msg)
+	err = a.activities.Log(wsID, item.TaskID, a.actorName(), "todo", msg)
+	a.notifyChange(wsID, 0, changeData)
+	return err
 }
 
 func (a *App) DeleteTodo(id uint) error {
@@ -1367,14 +1539,17 @@ func (a *App) DeleteTodo(id uint) error {
 	if err != nil {
 		return fmt.Errorf("không tìm thấy mục checklist id %d", id)
 	}
-	if _, _, err := a.taskInWorkspace(cur.TaskID); err != nil {
+	_, wsID, err := a.taskInWorkspace(cur.TaskID)
+	if err != nil {
 		return err
 	}
 	item, err := a.todos.Delete(id)
 	if err != nil {
 		return err
 	}
-	return a.activities.Log(item.TaskID, a.actorName(), "todo", "xóa việc: "+item.Title)
+	err = a.activities.Log(wsID, item.TaskID, a.actorName(), "todo", "xóa việc: "+item.Title)
+	a.notifyChange(wsID, 0, changeData)
+	return err
 }
 
 // AddComment lưu bình luận cho task; parentID != 0 = trả lời bình luận đó
@@ -1405,14 +1580,15 @@ func (a *App) AddComment(taskID uint, content string, parentID uint) error {
 	actor := a.actorName()
 	var act models.Activity
 	if parentID != 0 {
-		act, err = a.activities.LogReply(taskID, actor, content, parentID)
+		act, err = a.activities.LogReply(wsID, taskID, actor, content, parentID)
 	} else {
-		act, err = a.activities.LogComment(taskID, actor, content)
+		act, err = a.activities.LogComment(wsID, taskID, actor, content)
 	}
 	if err != nil {
 		return err
 	}
 	a.notifyComment(t, wsID, act.ID, content, replyToName)
+	a.notifyChange(wsID, 0, changeData)
 	return nil
 }
 

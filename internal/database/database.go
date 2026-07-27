@@ -108,7 +108,23 @@ func connect(cfg *config.Config) (*gorm.DB, error) {
 		&models.Session{}, &models.TaskDependency{}); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := backfillActivityWorkspace(db); err != nil {
+		return nil, fmt.Errorf("backfill activity workspace: %w", err)
+	}
 	return db, nil
+}
+
+// backfillActivityWorkspace điền activities.workspace_id (cột mới denormalize từ
+// task) cho các dòng cũ tạo trước khi có cột này. Idempotent: chỉ đụng dòng còn
+// workspace_id = 0. Subquery tương quan chạy được trên cả sqlite/postgres/mysql.
+func backfillActivityWorkspace(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&models.Activity{}) {
+		return nil
+	}
+	return db.Exec(`UPDATE activities
+		SET workspace_id = (SELECT t.workspace_id FROM tasks t WHERE t.id = activities.task_id)
+		WHERE (workspace_id = 0 OR workspace_id IS NULL)
+		  AND task_id IN (SELECT id FROM tasks)`).Error
 }
 
 // migrateLegacy dọn schema đời cũ, chạy TRƯỚC AutoMigrate:

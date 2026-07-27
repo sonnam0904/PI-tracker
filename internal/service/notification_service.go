@@ -8,10 +8,24 @@ import (
 
 type NotificationService struct {
 	db *gorm.DB
+	// onCreate chạy sau khi tạo notification mới (mời/nhắc/trả lời/nhắc hạn).
+	// App gắn callback này để phát Postgres NOTIFY cho client khác refresh chuông
+	// tức thời — service không cần biết giao thức realtime.
+	onCreate func()
 }
 
 func NewNotificationService(db *gorm.DB) *NotificationService {
 	return &NotificationService{db: db}
+}
+
+// SetOnCreate đăng ký callback báo "vừa tạo notification". Gọi lại sau mỗi lần
+// tạo mới (mọi đường: mời, mention, reply, nhắc hạn — đều qua service này).
+func (s *NotificationService) SetOnCreate(fn func()) { s.onCreate = fn }
+
+func (s *NotificationService) fireCreate() {
+	if s.onCreate != nil {
+		s.onCreate()
+	}
 }
 
 // NotificationView — notification kèm trạng thái lời mời (để render nút
@@ -37,6 +51,9 @@ func (s *NotificationService) ListForUser(userID uint) ([]NotificationView, erro
 // Create tạo thông báo mới (không dedup — mỗi lần nhắc tới là một thông báo).
 func (s *NotificationService) Create(n models.Notification) (models.Notification, error) {
 	err := s.db.Create(&n).Error
+	if err == nil {
+		s.fireCreate()
+	}
 	return n, err
 }
 
@@ -64,6 +81,12 @@ func (s *NotificationService) CreateIfAbsent(n models.Notification) (models.Noti
 	if err := s.db.Create(&n).Error; err != nil {
 		return models.Notification{}, false, err
 	}
+	// CỐ Ý không gọi fireCreate() ở đây: CreateIfAbsent chỉ dùng cho nhắc hạn
+	// (due), và checkDueTasks — nơi tạo ra nó — đã tự toast + đẩy mốc cho chính
+	// assignee. Nếu broadcast NOTIFY ngay đây, goroutine LISTEN của CÙNG client
+	// có thể nhận trước khi checkDueTasks kịp đẩy notifLastID → toast trùng.
+	// Client khác (nếu assignee đăng nhập nhiều máy) vẫn nhận due qua poll 10s;
+	// nhắc hạn không cần realtime từng giây.
 	return n, true, nil
 }
 

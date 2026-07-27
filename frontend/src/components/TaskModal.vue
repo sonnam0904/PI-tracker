@@ -1,10 +1,11 @@
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   SaveTask, DeleteTask, ListTodos, AddTodo, ToggleTodo, DeleteTodo,
   AddComment, ListActivities, ListStatusChanges,
 } from '../../wailsjs/go/main/App'
 import { ClipboardSetText } from '../../wailsjs/runtime'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { todayISO } from '../lib/date'
 import { buildPeopleMeta, UNASSIGNED_COLOR } from '../lib/people'
 import { TYPES, TYPE_LABEL, TYPE_PLAN, TYPE_BUG } from '../lib/taskTypes'
@@ -201,10 +202,17 @@ const statusSteps = computed(() =>
 )
 
 const statusClass = s => (s || '').replace(/\s+/g, '')
+// Đồng bộ realtime khi modal đang mở: client khác đổi checklist/bình luận/trạng
+// thái → nạp lại phần chỉ-đọc (todos/activities/lịch sử) TẠI CHỖ. Cố ý KHÔNG
+// đụng các field đang sửa (title/mô tả/estimate…) để không ghi đè thao tác của
+// người dùng. Dùng hàm hủy của EventsOn để không gỡ nhầm listener của GanttView.
+let stopLiveSync = null
 onMounted(async () => {
   await loadDetail()
   if (props.focusActivityId) focusComment(props.focusActivityId)
+  stopLiveSync = EventsOn('tasks:changed', loadDetail)
 })
+onUnmounted(() => stopLiveSync && stopLiveSync())
 
 async function run(fn) {
   error.value = ''
