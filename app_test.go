@@ -598,6 +598,43 @@ func TestSaveTaskRelatedTaskCrossWorkspace(t *testing.T) {
 	}
 }
 
+// Mục checklist chỉ truy cập qua todoId, nên phải chặn thao tác xuyên workspace:
+// người ở workspace khác không được tick/xóa mục của task không thuộc workspace
+// mình (đường vào qua MCP dùng chung ToggleTodo/DeleteTodo).
+func TestTodoMutationCrossWorkspace(t *testing.T) {
+	app := testApp(t)
+
+	// alice tạo task + một mục checklist trong workspace của mình.
+	loginApp(t, app, "alice")
+	if err := app.SaveTask(TaskDTO{Title: "task alice", Status: "Todo"}); err != nil {
+		t.Fatalf("tạo task alice: %v", err)
+	}
+	list, _ := app.ListTasks()
+	if err := app.AddTodo(list[0].ID, "việc của alice"); err != nil {
+		t.Fatalf("thêm todo alice: %v", err)
+	}
+	todos, _ := app.ListTodos(list[0].ID)
+	todoID := todos[0].ID
+
+	// bob ở workspace riêng KHÔNG được tick/xóa mục checklist của alice qua id.
+	loginApp(t, app, "bob")
+	if err := app.ToggleTodo(todoID, true); err == nil {
+		t.Fatal("bob tick todo khác workspace phải lỗi")
+	}
+	if err := app.DeleteTodo(todoID); err == nil {
+		t.Fatal("bob xóa todo khác workspace phải lỗi")
+	}
+
+	// alice quay lại: mục vẫn còn nguyên và chưa bị đánh done.
+	if _, err := app.Login("alice", "secret123"); err != nil {
+		t.Fatalf("login lại alice: %v", err)
+	}
+	todos, _ = app.ListTodos(list[0].ID)
+	if len(todos) != 1 || todos[0].Done {
+		t.Fatalf("todo của alice phải còn nguyên & chưa done, nhận: %+v", todos)
+	}
+}
+
 // Khóa/mở khóa thành viên: chỉ owner, không khóa owner, thành viên bị khóa
 // không thao tác được trong workspace nhưng vẫn xem được thông báo,
 // và nhận notification khi bị khóa/mở khóa.

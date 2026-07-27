@@ -110,6 +110,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 13, G: 17, B: 23, A: 1},
 		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
 		// Icon + tên chương trình cho cửa sổ/taskbar Linux (ProgramName khớp
 		// StartupWMClass trong task-manager.desktop để gom đúng icon trên taskbar).
 		Linux: &linux.Options{

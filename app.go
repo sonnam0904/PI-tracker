@@ -16,10 +16,10 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"gorm.io/gorm"
 
-	"taskmanager/internal/ai"
 	"taskmanager/internal/config"
 	"taskmanager/internal/database"
 	"taskmanager/internal/machinecrypto"
+	"taskmanager/internal/mcp"
 	"taskmanager/internal/models"
 	"taskmanager/internal/report"
 	"taskmanager/internal/service"
@@ -52,7 +52,10 @@ type App struct {
 	notifications *service.NotificationService
 	savedViews    *service.SavedViewService
 	dependencies  *service.DependencyService
-	estimator     *ai.Estimator
+
+	// mcp — MCP server localhost, bật/tắt từ trang "MCP". Tồn tại suốt vòng đời
+	// app; các công cụ của nó thao tác dưới session đang đăng nhập bên dưới.
+	mcp *mcp.Server
 
 	// version — phiên bản app nhúng lúc build (main.Version), dùng cho updater.
 	version string
@@ -75,15 +78,24 @@ type App struct {
 
 func NewApp(db *gorm.DB) *App {
 	a := &App{
-		// Gợi ý estimate bằng LLM — cấu hình qua .env (AI_PROVIDER/AI_API_KEY/
-		// AI_MODEL). Chưa cấu hình thì estimator vẫn tồn tại nhưng Enabled()=false.
-		estimator: ai.NewEstimator(ai.NewClient(ai.Load())),
 		// Notification native của HĐH (Linux: D-Bus/notify-send, Windows:
 		// toast, macOS: notification center) — hiện cả khi app chạy nền.
 		osNotify: func(title, body string) { _ = beeep.Notify(title, body, "") },
 	}
 	a.attachDB(db)
 	return a
+}
+
+// mcpServer trả về MCP server, khởi tạo lười lần đầu. Init lười để serverInfo
+// lấy được a.version (main gán SAU NewApp). Khóa a.mu vì Wails gọi mỗi phương
+// thức bound trên goroutine riêng — hai lời gọi đồng thời có thể đua ghi a.mcp.
+func (a *App) mcpServer() *mcp.Server {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.mcp == nil {
+		a.mcp = mcp.New("PI Tracker Task Manager", a.version)
+	}
+	return a.mcp
 }
 
 // attachDB gắn (hoặc thay) kết nối DB và dựng lại toàn bộ service trên nó.
@@ -133,6 +145,16 @@ func pingDB(db *gorm.DB) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return sqlDB.PingContext(ctx)
+}
+
+// dbReady báo DB đã có kết nối (a.db != nil, các service đã được dựng). Dùng để
+// chặn sớm ở lớp MCP: client ngoài có thể gọi khi app đang ở chế độ suy giảm
+// (chưa/mất kết nối lúc khởi động), lúc đó service là nil và sẽ nil-deref. Chỉ
+// kiểm tra con trỏ (không ping) nên rẻ, gọi được ở mỗi tool call.
+func (a *App) dbReady() bool {
+	a.dbMu.Lock()
+	defer a.dbMu.Unlock()
+	return a.db != nil
 }
 
 // DBStatus trả trạng thái kết nối DB hiện tại bằng cách PING thật, nên phản
@@ -249,6 +271,16 @@ func (a *App) startup(ctx context.Context) {
 	}
 	go a.watchNotifications(ctx)
 	go a.watchDueTasks(ctx)
+}
+
+// shutdown chạy khi app đóng: tắt MCP server nếu đang bật để nhả cổng localhost.
+func (a *App) shutdown(ctx context.Context) {
+	a.mu.Lock()
+	srv := a.mcp
+	a.mu.Unlock()
+	if srv != nil {
+		_ = srv.Stop()
+	}
 }
 
 // notifPollInterval — nhịp quét thông báo mới trong DB. Thông báo do instance
@@ -1167,73 +1199,6 @@ func (a *App) SaveTask(dto TaskDTO) error {
 	return nil
 }
 
-// AIStatusDTO cho biết tính năng gợi ý AI đã cấu hình chưa (để frontend
-// ẩn/hiện nút "Gợi ý AI" và thông báo phù hợp).
-type AIStatusDTO struct {
-	Enabled  bool   `json:"enabled"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-}
-
-// AIStatus trả về trạng thái cấu hình LLM hiện tại.
-func (a *App) AIStatus() AIStatusDTO {
-	provider, model, enabled := a.estimator.Info()
-	return AIStatusDTO{Enabled: enabled, Provider: provider, Model: model}
-}
-
-// SuggestEstimate gọi LLM đề xuất estimate cho bản nháp task đang mở, dựa trên
-// mô tả và các task Done gần đây của workspace làm dữ liệu tham chiếu.
-func (a *App) SuggestEstimate(dto TaskDTO) (ai.Suggestion, error) {
-	wsID, err := a.requireWorkspace()
-	if err != nil {
-		return ai.Suggestion{}, err
-	}
-	if !a.estimator.Enabled() {
-		return ai.Suggestion{}, fmt.Errorf("gợi ý AI chưa được cấu hình — đặt AI_PROVIDER, AI_API_KEY (và AI_MODEL nếu cần) trong file .env rồi mở lại app")
-	}
-	if strings.TrimSpace(dto.Title) == "" {
-		return ai.Suggestion{}, fmt.Errorf("nhập tiêu đề task trước khi xin gợi ý")
-	}
-
-	taskType := models.TaskType(dto.Type)
-	if taskType == 0 {
-		taskType = models.TypePlan
-	}
-
-	recent, err := a.tasks.RecentDone(wsID, 30)
-	if err != nil {
-		return ai.Suggestion{}, err
-	}
-	examples := make([]ai.Example, 0, len(recent))
-	for _, t := range recent {
-		ex := ai.Example{
-			Title:      t.Title,
-			Type:       t.Type.Label(),
-			Size:       string(t.Size),
-			EstAIDays:  t.EstimateAIDays,
-			ActualDays: t.ActualDays,
-		}
-		if c, ok := t.CycleDays(); ok {
-			ex.CycleDays = c
-		}
-		examples = append(examples, ex)
-	}
-
-	draft := ai.Draft{
-		Title:       dto.Title,
-		Description: dto.Description,
-		Type:        taskType.Label(),
-	}
-
-	ctx := a.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, 50*time.Second)
-	defer cancel()
-	return a.estimator.Suggest(ctx, draft, examples)
-}
-
 func (a *App) DeleteTask(id uint) error {
 	if _, _, err := a.taskInWorkspace(id); err != nil {
 		return err
@@ -1374,6 +1339,16 @@ func (a *App) AddTodo(taskID uint, title string) error {
 }
 
 func (a *App) ToggleTodo(id uint, done bool) error {
+	// Kiểm quyền theo TASK chứa mục này: mục checklist chỉ được truy cập bằng
+	// todoId nên phải phân giải task rồi xác nhận task thuộc workspace hiện tại
+	// (chặn client MCP sửa mục ở workspace khác bằng cách đoán/tái dùng id).
+	cur, err := a.todos.Get(id)
+	if err != nil {
+		return fmt.Errorf("không tìm thấy mục checklist id %d", id)
+	}
+	if _, _, err := a.taskInWorkspace(cur.TaskID); err != nil {
+		return err
+	}
 	item, err := a.todos.SetDone(id, done)
 	if err != nil {
 		return err
@@ -1386,6 +1361,15 @@ func (a *App) ToggleTodo(id uint, done bool) error {
 }
 
 func (a *App) DeleteTodo(id uint) error {
+	// Cùng lý do như ToggleTodo: kiểm task của mục thuộc workspace hiện tại
+	// trước khi xóa, vì đường vào chỉ có todoId.
+	cur, err := a.todos.Get(id)
+	if err != nil {
+		return fmt.Errorf("không tìm thấy mục checklist id %d", id)
+	}
+	if _, _, err := a.taskInWorkspace(cur.TaskID); err != nil {
+		return err
+	}
 	item, err := a.todos.Delete(id)
 	if err != nil {
 		return err

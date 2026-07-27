@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -110,6 +111,24 @@ func machineKey() ([]byte, error) {
 		h.Write([]byte(mid))
 	}
 	return h.Sum(nil), nil
+}
+
+// MCPToken trả về bearer token cố định cho MCP server local: dẫn xuất từ cùng
+// bí mật cục bộ + machine ID như machineKey, nhưng tag riêng để không tái sử
+// dụng khóa mã hóa session cho mục đích khác. Ổn định giữa các lần khởi động
+// server (không đổi mỗi lần bật/tắt) và khác nhau giữa các máy/lần cài đặt.
+func MCPToken() (string, error) {
+	secret, err := localSecret()
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	h.Write([]byte("pi-tracker/mcp-token/v1"))
+	h.Write(secret)
+	if mid := osMachineID(); mid != "" {
+		h.Write([]byte(mid))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func gcmForMachine() (cipher.AEAD, error) {

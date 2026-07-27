@@ -49,10 +49,10 @@ func Load() (*Config, error) {
 		SQLitePath: get("DB_SQLITE_PATH", "taskmanager.db"),
 	}
 
-	// Các biến NGOÀI nhóm DB_ (vd AI_PROVIDER/AI_API_KEY/AI_MODEL…) được đọc
-	// bằng os.Getenv ở nơi khác (ai.Load). Nạp chúng từ .env vào môi trường nếu
-	// CHƯA có (không đè biến thật) để các consumer đó vẫn thấy cấu hình từ .env.
-	// KHÔNG nạp DB_* để phần trên luôn đọc .env refresh mỗi lần Load.
+	// Các biến NGOÀI nhóm DB_ được đọc bằng os.Getenv ở nơi khác. Nạp chúng từ
+	// .env vào môi trường nếu CHƯA có (không đè biến thật) để các consumer đó
+	// vẫn thấy cấu hình từ .env. KHÔNG nạp DB_* để phần trên luôn đọc .env
+	// refresh mỗi lần Load.
 	for k, v := range fileEnv {
 		if strings.HasPrefix(k, "DB_") {
 			continue

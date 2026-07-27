@@ -33,6 +33,14 @@ func (s *TodoService) Add(taskID uint, title string) (models.TodoItem, error) {
 	return item, err
 }
 
+// Get nạp một mục checklist theo id — dùng để kiểm quyền (mục thuộc task nào,
+// task đó có thuộc workspace hiện tại không) TRƯỚC khi sửa/xóa.
+func (s *TodoService) Get(id uint) (models.TodoItem, error) {
+	var item models.TodoItem
+	err := s.db.First(&item, id).Error
+	return item, err
+}
+
 // SetDone đổi trạng thái một mục và trả về mục đó (để ghi log).
 func (s *TodoService) SetDone(id uint, done bool) (models.TodoItem, error) {
 	var item models.TodoItem

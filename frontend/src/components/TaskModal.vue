@@ -3,11 +3,11 @@ import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import {
   SaveTask, DeleteTask, ListTodos, AddTodo, ToggleTodo, DeleteTodo,
   AddComment, ListActivities, ListStatusChanges,
-  SuggestEstimate, AIStatus,
 } from '../../wailsjs/go/main/App'
+import { ClipboardSetText } from '../../wailsjs/runtime'
 import { todayISO } from '../lib/date'
 import { buildPeopleMeta, UNASSIGNED_COLOR } from '../lib/people'
-import { TYPES, TYPE_PLAN, TYPE_BUG } from '../lib/taskTypes'
+import { TYPES, TYPE_LABEL, TYPE_PLAN, TYPE_BUG } from '../lib/taskTypes'
 
 const props = defineProps({
   task: { type: Object, default: null }, // null = thêm mới
@@ -21,6 +21,28 @@ const emit = defineEmits(['close', 'saved'])
 const editing = computed(() => !!props.task)
 const error = ref('')
 const confirmDelete = ref(false)
+const contextCopied = ref(false) // phản hồi ngắn sau khi chép ngữ cảnh cho AI
+
+// copyContext chép một đoạn ngữ cảnh (dạng text) mô tả task đang mở để dán vào
+// Claude/agent: nêu rõ taskId + thông tin nhận diện và nhắc dùng MCP server
+// "pi-tracker" thao tác đúng task này. Tái dùng taskId cho các công cụ MCP.
+async function copyContext() {
+  const typeLabel = TYPE_LABEL[form.type] || 'Theo plan'
+  const text = [
+    'Tôi đang xem task này trong PI Tracker. Hãy dùng MCP server "pi-tracker" để thao tác với nó.',
+    `- taskId: ${form.id}`,
+    `- Tiêu đề: ${form.title}`,
+    `- Trạng thái: ${form.status} · Loại: ${typeLabel}`,
+    'Trước khi sửa, gọi get_task với taskId ở trên để lấy chi tiết hiện tại.',
+  ].join('\n')
+  try {
+    await ClipboardSetText(text)
+  } catch {
+    try { await navigator.clipboard.writeText(text) } catch { /* bỏ qua */ }
+  }
+  contextCopied.value = true
+  setTimeout(() => { contextCopied.value = false }, 2000)
+}
 
 const SIZES = ['S', 'M', 'L', 'XL']
 const STATUSES = ['Todo', 'In Progress', 'Blocked', 'Done']
@@ -63,66 +85,6 @@ const form = reactive(props.task
 
 // Tách bản sao mảng phụ thuộc để sửa trong modal không đụng vào prop gốc.
 form.dependsOn = Array.isArray(form.dependsOn) ? [...form.dependsOn] : []
-
-// ---- Gợi ý estimate bằng AI ----
-const ai = reactive({ enabled: false, provider: '', model: '' })
-const aiBusy = ref(false)
-const aiError = ref('')
-const aiSuggestion = ref(null) // Suggestion cuối cùng để hiển thị lý do/độ tin cậy
-// Checklist AI gợi ý, CHỜ tạo khi lưu task mới (task đang sửa thì thêm ngay).
-const aiChecklist = ref([])
-
-onMounted(async () => {
-  try {
-    const s = await AIStatus()
-    ai.enabled = s.enabled
-    ai.provider = s.provider
-    ai.model = s.model
-  } catch { /* không cấu hình AI → giữ nút ẩn */ }
-})
-
-const CONFIDENCE_LABEL = { high: 'cao', medium: 'trung bình', low: 'thấp' }
-
-async function suggestEstimate() {
-  if (aiBusy.value) return
-  aiError.value = ''
-  if (!form.title.trim()) {
-    aiError.value = 'Nhập tiêu đề task trước khi xin gợi ý'
-    return
-  }
-  aiBusy.value = true
-  try {
-    const s = await SuggestEstimate({
-      ...form,
-      type: Number(form.type) || TYPE_PLAN,
-    })
-    aiSuggestion.value = s
-    if (s.description && s.description.trim()) form.description = s.description
-    if (s.estimateAiDays > 0) form.estimateAiDays = s.estimateAiDays
-    if (s.estimateCustomerDays > 0) form.estimateCustomerDays = s.estimateCustomerDays
-    if (SIZES.includes(s.size)) form.size = s.size
-
-    const items = (s.checklist || []).filter(x => x && x.trim())
-    if (form.id) {
-      // Task đã tồn tại → thêm todo ngay rồi nạp lại danh sách checklist.
-      for (const title of items) await AddTodo(form.id, title)
-      if (items.length) await loadDetail()
-      aiChecklist.value = []
-    } else {
-      // Task mới chưa có ID → giữ lại, tạo khi lưu (gửi qua initialTodos).
-      aiChecklist.value = items
-    }
-  } catch (e) {
-    aiError.value = String(e)
-  } finally {
-    aiBusy.value = false
-  }
-}
-
-// Bỏ 1 mục khỏi checklist AI gợi ý (chỉ với task mới, trước khi lưu).
-function removeAiTodo(i) {
-  aiChecklist.value.splice(i, 1)
-}
 
 // ---- Bug tracking ----
 const isBug = computed(() => form.type === TYPE_BUG)
@@ -418,8 +380,6 @@ async function save() {
       reporterId: Number(form.reporterId) || 0,
       relatedTaskId: Number(form.relatedTaskId) || 0,
       dependsOn: (form.dependsOn || []).map(Number),
-      // Checklist AI gợi ý chỉ áp khi tạo mới; task đang sửa đã thêm todo trực tiếp.
-      initialTodos: form.id ? [] : aiChecklist.value,
     })
     emit('saved')
   } catch (e) {
@@ -459,6 +419,12 @@ async function doDelete() {
           >
             {{ confirmDelete ? 'Bấm lần nữa để xóa' : 'Xóa task' }}
           </button>
+          <button
+            v-if="editing"
+            class="btn sm icon"
+            :title="contextCopied ? 'Đã chép ngữ cảnh — dán vào Claude' : 'Chép ngữ cảnh task để dán vào Claude'"
+            @click="copyContext"
+          >{{ contextCopied ? '✓' : '⧉' }}</button>
           <button class="btn sm icon" @click="emit('close')">✕</button>
         </div>
       </div>
@@ -558,37 +524,6 @@ async function doDelete() {
                 <span v-if="form.status === 'Done' && !form.resolution" class="hint">Bug Done nên ghi rõ cách đóng</span>
               </div>
             </template>
-
-            <div v-if="ai.enabled" class="field full ai-suggest">
-              <div class="ai-bar">
-                <button type="button" class="btn ai" :disabled="aiBusy" @click="suggestEstimate">
-                  <span v-if="aiBusy">⏳ Đang phân tích…</span>
-                  <span v-else>✨ Phân tích bằng AI (mô tả chi tiết + estimate)</span>
-                </button>
-                <span class="hint ai-model">{{ ai.provider }} · {{ ai.model }}</span>
-              </div>
-              <div v-if="aiError" class="hint ai-err">{{ aiError }}</div>
-              <div v-if="aiSuggestion" class="ai-result">
-                <div class="ai-line">
-                  Đề xuất: <b>{{ aiSuggestion.estimateAiDays }}</b> ngày (AI) ·
-                  khách <b>{{ aiSuggestion.estimateCustomerDays }}</b> ·
-                  size <b>{{ aiSuggestion.size }}</b>
-                  <span v-if="aiSuggestion.confidence">— độ tin cậy {{ CONFIDENCE_LABEL[aiSuggestion.confidence] || aiSuggestion.confidence }}</span>
-                </div>
-                <div v-if="aiSuggestion.description" class="ai-line ai-desc-note">✓ Đã viết mô tả chi tiết vào ô Mô tả phía trên (kiểm tra & sửa nếu cần).</div>
-                <div v-if="form.id && aiChecklist.length === 0 && (aiSuggestion.checklist || []).length" class="ai-line ai-desc-note">
-                  ✓ Đã thêm {{ (aiSuggestion.checklist || []).length }} việc vào checklist.
-                </div>
-                <div v-if="!form.id && aiChecklist.length" class="ai-checklist">
-                  <div class="ai-ck-head">Checklist sẽ tạo khi lưu ({{ aiChecklist.length }}):</div>
-                  <div v-for="(item, i) in aiChecklist" :key="i" class="ai-ck-row">
-                    <span>☐ {{ item }}</span>
-                    <button type="button" class="ai-ck-del" title="Bỏ mục này" @click="removeAiTodo(i)">✕</button>
-                  </div>
-                </div>
-                <div v-if="aiSuggestion.rationale" class="ai-why">{{ aiSuggestion.rationale }}</div>
-              </div>
-            </div>
 
             <div class="field">
               <label>Estimate báo khách (ngày)</label>
@@ -800,42 +735,6 @@ async function doDelete() {
 </template>
 
 <style scoped>
-/* Grid item trong .form-grid: min-width:0 để nội dung dài không phá cột. */
-.ai-suggest { min-width: 0; }
-.ai-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.btn.ai {
-  background: linear-gradient(90deg, #6d4aff, #9a6bff);
-  color: #fff;
-  border: none;
-  white-space: nowrap;
-}
-.btn.ai:disabled { opacity: 0.6; cursor: default; }
-.ai-model { opacity: 0.7; }
-.ai-err { color: #ff6b6b; margin-top: 6px; }
-.ai-result {
-  margin-top: 8px;
-  background: rgba(109, 74, 255, 0.1);
-  border: 1px solid rgba(109, 74, 255, 0.35);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 13px;
-  overflow-wrap: anywhere; /* link/chuỗi dài tự xuống dòng, không tràn modal */
-}
-.ai-line + .ai-line { margin-top: 4px; }
-.ai-desc-note { color: var(--green, #4caf50); }
-.ai-why { margin-top: 4px; opacity: 0.85; font-style: italic; }
-.ai-checklist { margin-top: 8px; }
-.ai-ck-head { font-weight: 600; margin-bottom: 4px; }
-.ai-ck-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; padding: 2px 0;
-}
-.ai-ck-del {
-  background: none; border: none; color: var(--text-dim, #888);
-  cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 4px;
-}
-.ai-ck-del:hover { color: #ff6b6b; }
-
 /* Phụ thuộc: chip task đã chọn + nút bỏ */
 .dep-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .dep-chip {
