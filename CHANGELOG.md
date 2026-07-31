@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/sonnam0904/PI-tracker/compare/v1.8.0...v1.9.0) (2026-07-31)
+
+
+### Features
+
+* Enhanced search functionality to allow filtering by task ID, improving user experience in task management. ([ce2c36f](https://github.com/sonnam0904/PI-tracker/commit/ce2c36feccd74bed65007ccc8c4e785a3f858c6b))
+
 # [1.8.0](https://github.com/sonnam0904/PI-tracker/compare/v1.7.0...v1.8.0) (2026-07-31)
 
 
