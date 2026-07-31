@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/sonnam0904/PI-tracker/compare/v1.7.0...v1.8.0) (2026-07-31)
+
+
+### Features
+
+* add tag management features and enhance database logging ([5b3cb2a](https://github.com/sonnam0904/PI-tracker/commit/5b3cb2a5069df059f93b61a85ebd5aec2d925821))
+
 # [1.7.0](https://github.com/sonnam0904/PI-tracker/compare/v1.6.1...v1.7.0) (2026-07-27)
 
 
