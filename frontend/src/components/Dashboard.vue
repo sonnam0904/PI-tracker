@@ -29,7 +29,12 @@ async function load() {
 let stopLiveSync = null
 onMounted(async () => {
   try {
-    people.value = await ListPeople()
+    // Bỏ người quan sát khỏi ô chọn nhân sự: họ KHÔNG tính vào chỉ số (xem
+    // MetricsService.Compute) nên chọn họ chỉ ra một bảng số 0, và họ cũng
+    // không xuất hiện ở bảng so sánh thành viên của TeamMetrics.
+    // Ô select này còn truyền assigneeId cho ExportReport, nên lọc ở đây cũng
+    // là lọc luôn danh sách người xuất được báo cáo Excel/PDF cá nhân.
+    people.value = (await ListPeople()).filter(p => !p.observer)
   } catch (e) {
     error.value = String(e)
   }

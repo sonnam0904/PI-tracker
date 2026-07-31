@@ -645,6 +645,39 @@ input, textarea { user-select: text; }
   display: flex; align-items: center; gap: 6px;
   flex-shrink: 0;
 }
+/* Cột nhãn rộng cố định (LABEL_W) và overflow: hidden, nên hàng này phải tự
+   quyết định ai bị cắt khi chật. Tên người co lại kèm "…"; badge AI và ID thì
+   flex: none để không bao giờ bị đẩy ra ngoài — ID mà bị cắt thì mất luôn công
+   dụng của nó là thứ để gõ vào ô tìm kiếm. */
+.g-label .g-who {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.g-label .a > span:not(.g-who) { flex: none; }
+.g-label .g-id { font-variant-numeric: tabular-nums; }
+
+/* Vạch kéo đổi độ rộng cột nhãn. Nằm TRONG .g-label/.corner (không tràn ra
+   ngoài) vì hai chỗ đó đều overflow: hidden — đặt right âm sẽ bị cắt mất.
+   Vùng bắt chuột 7px, vạch nhìn thấy chỉ 2px, để dễ trúng mà không thô.
+   KHÔNG thêm position: relative cho .g-label/.corner: hai chỗ đó đã là
+   position: sticky, mà sticky cũng là positioned nên đủ làm gốc toạ độ cho
+   con absolute. Ghi đè thành relative sẽ phá luôn cột ghim khi cuộn ngang. */
+.g-resize {
+  position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+  cursor: col-resize; z-index: 8;
+}
+.g-resize::after {
+  content: ''; position: absolute; top: 0; right: 0; width: 2px; height: 100%;
+  background: var(--accent);
+  opacity: 0; transition: opacity .12s;
+}
+.g-resize:hover::after, .g-resize.on::after { opacity: 1; }
+/* Trong lúc kéo, MỌI vạch sáng lên (class .on) nên con trỏ rời khỏi dòng ban đầu
+   vẫn thấy đúng một đường liền mạch chạy dọc cột. */
+
+/* Kéo nhanh thì con trỏ ra khỏi vạch 7px, khi đó cursor rơi về mặc định và trông
+   như đã nhả chuột. Đặt trên <body> để con trỏ giữ nguyên hình bất kể đang ở đâu,
+   và chặn bôi đen chữ trong lúc kéo. */
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
 .avatar {
   width: 19px; height: 19px; border-radius: 50%;
   background: var(--accent-soft); color: var(--accent);

@@ -221,7 +221,11 @@ def main():
         # "muc luc" cua bao cao: moi tag mot muc trong ban .md, mot sheet trong Excel.
         tags=[k for k, _ in sorted(by_tag.items(), key=lambda kv: -kv[1]["actual"])],
         carryover=[
-            dict(id=t["id"], title=clean_title(t.get("title", "")), assignee=names.get(t.get("assigneeId")),
+            # Fallback ve id nhu dong 162: list_people KHONG tra ve nguoi quan sat
+            # (observer), nen task cua nguoi da chuyen sang quan sat se khong tra
+            # duoc ten. Khong co fallback thi o "Nguoi" in ra None.
+            dict(id=t["id"], title=clean_title(t.get("title", "")),
+                 assignee=names.get(t.get("assigneeId"), str(t.get("assigneeId"))),
                  description=(t.get("description") or "").strip(),
                  tags=task_tags(t), est_ai=t.get("estimateAiDays") or 0,
                  start=t.get("startDate") or "", due=t.get("dueDate") or "")

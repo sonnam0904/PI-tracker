@@ -24,8 +24,58 @@ const props = defineProps({
 const emitEvents = defineEmits(['task-opened'])
 
 const DAY_W = 34
-const LABEL_W = 280
 const ROW_H = 46
+
+// Cột nhãn kéo rộng được: tiêu đề task hay dài hơn 280px nên bị cắt, mà đọc được
+// tiêu đề là việc chính của cột này. Là ref (không phải const) vì mọi chỗ tính
+// toạ độ theo nó — kể cả mũi tên phụ thuộc vẽ bằng SVG — phải chạy lại khi kéo.
+const LABEL_W_DEFAULT = 280
+const LABEL_W_MIN = 180
+const LABEL_W_MAX = 720
+const LABEL_W_KEY = 'gantt.labelW'
+
+const LABEL_W = ref(clampLabelW(Number(localStorage.getItem(LABEL_W_KEY)) || LABEL_W_DEFAULT))
+const resizing = ref(false)
+
+function clampLabelW(v) {
+  return Math.min(LABEL_W_MAX, Math.max(LABEL_W_MIN, Math.round(v) || LABEL_W_DEFAULT))
+}
+
+// Kéo bằng mousemove trên window, không trên chính cái handle: con trỏ hay chạy
+// ra ngoài handle rộng 7px khi kéo nhanh, bắt trên handle sẽ mất giữa đường.
+let dragX0 = 0
+let dragW0 = 0
+
+function onResizeMove(e) {
+  LABEL_W.value = clampLabelW(dragW0 + e.clientX - dragX0)
+}
+
+function endResize() {
+  resizing.value = false
+  document.body.classList.remove('col-resizing')
+  window.removeEventListener('mousemove', onResizeMove)
+  window.removeEventListener('mouseup', endResize)
+  localStorage.setItem(LABEL_W_KEY, String(LABEL_W.value))
+}
+
+function startResize(e) {
+  // preventDefault chặn bôi đen chữ trong lúc kéo; handle nằm TRONG .g-label vốn
+  // có @click mở modal nên phải chặn cả nổi bọt.
+  e.preventDefault()
+  e.stopPropagation()
+  dragX0 = e.clientX
+  dragW0 = LABEL_W.value
+  resizing.value = true
+  document.body.classList.add('col-resizing')
+  window.addEventListener('mousemove', onResizeMove)
+  window.addEventListener('mouseup', endResize)
+}
+
+// Nháy đúp lên vạch = về mặc định, quy ước quen của cột bảng kéo được.
+function resetResize() {
+  LABEL_W.value = LABEL_W_DEFAULT
+  localStorage.setItem(LABEL_W_KEY, String(LABEL_W.value))
+}
 
 const view = ref('timeline') // 'timeline' | 'kanban' | 'table'
 const month = ref(monthStart(new Date()))
@@ -191,7 +241,12 @@ onMounted(async () => {
   measureHead()
   stopLiveSync = EventsOn('tasks:changed', onRemoteChange)
 })
-onUnmounted(() => stopLiveSync && stopLiveSync())
+onUnmounted(() => {
+  stopLiveSync && stopLiveSync()
+  // Component có thể bị huỷ giữa lúc đang kéo (đổi tab/tháng) — mouseup lúc đó
+  // không bao giờ tới, listener trên window sẽ sống mãi nếu không dọn ở đây.
+  if (resizing.value) endResize()
+})
 watch(() => props.openTaskId, maybeOpenRequested)
 // Header chỉ tồn tại khi ở Timeline — đo lại khi chuyển về view này.
 watch(view, v => { if (v === 'timeline') nextTick(measureHead) })
@@ -300,9 +355,9 @@ const depLines = computed(() => {
       if (!pred) continue
       lines.push({
         key: `${pid}-${t.id}`,
-        x1: LABEL_W + pred.left + pred.width,
+        x1: LABEL_W.value + pred.left + pred.width,
         y1: headH.value + pi * ROW_H + ROW_H / 2,
-        x2: LABEL_W + succ.left,
+        x2: LABEL_W.value + succ.left,
         y2: headH.value + i * ROW_H + ROW_H / 2,
       })
     }
@@ -385,7 +440,16 @@ function onSaved() {
     <div v-if="view === 'timeline'" class="gantt-wrap">
       <div class="gantt" :style="{ minWidth: LABEL_W + trackW + 'px' }">
         <div class="gantt-head" ref="headEl">
-          <div class="corner" :style="{ width: LABEL_W + 'px' }">Task · Nhân sự</div>
+          <div class="corner" :style="{ width: LABEL_W + 'px' }">
+            Task · Nhân sự
+            <!-- Vạch kéo lặp lại ở MỌI dòng, không chỉ ở header: người dùng đưa
+                 chuột vào mép phải của cột ở bất kỳ đâu cũng phải kéo được. -->
+            <span
+              class="g-resize" :class="{ on: resizing }"
+              title="Kéo để đổi độ rộng cột · nháy đúp để về mặc định"
+              @mousedown="startResize" @click.stop @dblclick.stop="resetResize"
+            ></span>
+          </div>
           <div
             v-for="i in days" :key="i"
             class="g-day"
@@ -412,11 +476,19 @@ function onSaved() {
                 <span class="avatar" :style="{ background: personMeta[t.assigneeId].color, color: '#fff' }">
                   {{ personMeta[t.assigneeId].initials }}
                 </span>
-                {{ personName[t.assigneeId] }}
+                <span class="g-who">{{ personName[t.assigneeId] }}</span>
               </template>
               <template v-else>Chưa gán</template>
               <span v-if="t.aiUsed" title="Task có dùng AI">· AI</span>
+              <span class="g-id" :title="'ID task — gõ #' + t.id + ' vào ô tìm kiếm để lọc ra task này'">
+                · #{{ t.id }}
+              </span>
             </span>
+            <span
+              class="g-resize" :class="{ on: resizing }"
+              title="Kéo để đổi độ rộng cột · nháy đúp để về mặc định"
+              @mousedown="startResize" @click.stop @dblclick.stop="resetResize"
+            ></span>
           </div>
           <div class="g-track" :style="{ width: trackW + 'px' }">
             <div

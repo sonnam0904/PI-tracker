@@ -84,9 +84,15 @@ export function sameConfig(a, b) {
 
 export function matchesConfig(t, cfg) {
   const needle = (cfg.q || '').trim().toLowerCase()
-  // Tìm nhanh quét cả tên tag — gõ tên tag là ra ngay các task thuộc tag đó.
+  // Tìm nhanh quét cả tên tag — gõ tên tag là ra ngay các task thuộc tag đó —
+  // và cả "#<id>", để copy id từ danh sách/báo cáo rồi dán vào là ra đúng task.
+  //
+  // Đưa "#id" vào chung đống rơm (không tách nhánh riêng) là cố ý: gõ "#4" lọc
+  // ra mọi id bắt đầu bằng 4, thu hẹp dần theo từng ký tự đúng như phần còn lại
+  // của ô tìm kiếm, và khớp cách combobox chọn task phụ thuộc đang làm.
   if (needle) {
-    const hay = [t.title || '', t.description || '', ...(t.tags || [])].join(' ').toLowerCase()
+    const hay = [`#${t.id}`, t.title || '', t.description || '', ...(t.tags || [])]
+      .join(' ').toLowerCase()
     if (!hay.includes(needle)) return false
   }
   const conds = (cfg.conditions || []).filter(c => c.field && c.op)

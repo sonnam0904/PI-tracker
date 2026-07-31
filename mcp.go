@@ -252,11 +252,12 @@ func (a *App) mcpTools() []mcp.Tool {
 			},
 		},
 		{
-			Name:        "list_people",
-			Description: "Danh sách thành viên workspace hiện tại ({id, name}) — dùng để lấy assigneeId/reporterId khi tạo/sửa task.",
+			Name: "list_people",
+			Description: "Danh sách thành viên workspace hiện tại ({id, name}) — dùng để lấy assigneeId/reporterId khi tạo/sửa task. " +
+				"KHÔNG gồm người quan sát/quản lý (observer): họ không tính vào chỉ số và không nhận task.",
 			InputSchema: objSchema(map[string]any{}),
 			Handler: func(json.RawMessage) (any, error) {
-				return a.ListPeople()
+				return a.mcpListPeople()
 			},
 		},
 		{
@@ -499,6 +500,28 @@ func (a *App) mcpTools() []mcp.Tool {
 		tools[i].Handler = guard(tools[i].Handler)
 	}
 	return tools
+}
+
+// mcpListPeople như ListPeople nhưng BỎ người quan sát/quản lý (observer).
+// Họ không tính vào chỉ số (xem MetricsService.Compute) và không nhận task, nên
+// để họ trong danh sách chỉ dẫn client tới việc gán task cho người không làm.
+//
+// Lọc ở đây, KHÔNG sửa ListPeople: binding đó còn phục vụ trang Cài đặt (chỗ
+// bật/tắt chính cờ observer — lọc đi thì không còn gì để bật lại) và các picker
+// nhân sự khác, nơi vẫn phải tra được tên người đã chuyển sang quan sát.
+func (a *App) mcpListPeople() ([]service.Member, error) {
+	people, err := a.ListPeople()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]service.Member, 0, len(people))
+	for _, p := range people {
+		if p.Observer {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // mcpGetTaskDetail gom toàn bộ dữ liệu chi tiết của một task, tái dùng các

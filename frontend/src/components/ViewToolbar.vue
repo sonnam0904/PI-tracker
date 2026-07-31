@@ -25,7 +25,14 @@ function clearAll() {
 
 <template>
   <div class="view-toolbar">
-    <input v-model="cfg.q" class="filter-search" placeholder="🔍 Tìm theo tiêu đề / mô tả…" />
+    <!-- Placeholder kể đủ 4 thứ tìm được (xem matchesConfig): trước đây chỉ ghi
+         tiêu đề/mô tả nên không ai biết gõ được cả tag và #id. -->
+    <input
+      v-model="cfg.q"
+      class="filter-search"
+      placeholder="🔍 Tìm theo tiêu đề / mô tả / tag, hoặc #ID task…"
+      title="Gõ #41 để lọc ra task có ID 41. Tìm được cả theo tiêu đề, mô tả và tên tag."
+    />
 
     <FilterPanel :cfg="cfg" :names="names" :tags="tags" />
     <OrderPanel :items="cfg.sorts" :fields="sortFields" label="Sắp xếp" icon="⇅" title="Sắp xếp theo" />

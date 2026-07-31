@@ -952,6 +952,40 @@ func TestMemberObserverAndOwnerOnly(t *testing.T) {
 		t.Fatal("bob vẫn phải là thành viên (chỉ là observer)")
 	}
 
+	// Nhưng MCP list_people thì KHÔNG được trả observer: client dùng danh sách
+	// này để chọn assigneeId, để observer trong đó là mời gán task cho người
+	// không làm. Hai binding phải khác nhau — ListPeople giữ đủ (trang Cài đặt
+	// cần để bật/tắt lại cờ), list_people thì lọc.
+	var peopleHandler func(json.RawMessage) (any, error)
+	for _, tool := range app.mcpTools() {
+		if tool.Name == "list_people" {
+			peopleHandler = tool.Handler
+		}
+	}
+	if peopleHandler == nil {
+		t.Fatal("khong tim thay tool list_people")
+	}
+	res, err := peopleHandler(nil)
+	if err != nil {
+		t.Fatalf("list_people: %v", err)
+	}
+	mcpPeople, ok := res.([]service.Member)
+	if !ok {
+		t.Fatalf("list_people phai tra []service.Member, duoc %T", res)
+	}
+	if len(mcpPeople) != len(people)-1 {
+		t.Errorf("list_people tra %d nguoi, ListPeople tra %d — phai bo dung 1 observer",
+			len(mcpPeople), len(people))
+	}
+	for _, p := range mcpPeople {
+		if p.ID == bobID {
+			t.Error("list_people vẫn trả observer bob")
+		}
+		if p.Observer {
+			t.Errorf("list_people trả thành viên có observer=true: %s", p.Name)
+		}
+	}
+
 	// Member (bob) không được đổi observer hay SaveSettings.
 	if _, err := app.Login("bob", "secret123"); err != nil {
 		t.Fatalf("login bob: %v", err)
