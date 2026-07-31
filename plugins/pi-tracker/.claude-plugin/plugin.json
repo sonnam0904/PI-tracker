@@ -1,0 +1,18 @@
+{
+  "name": "pi-tracker",
+  "version": "1.0.0",
+  "description": "Skill làm việc với dữ liệu PI Tracker (báo cáo tháng).",
+  "author": {
+    "name": "sonnn",
+    "email": "sonnn.uct@gmail.com"
+  },
+  "homepage": "https://github.com/sonnam0904/PI-tracker",
+  "repository": "https://github.com/sonnam0904/PI-tracker",
+  "license": "MIT",
+  "keywords": [
+    "pi-tracker",
+    "bao-cao",
+    "report",
+    "productivity"
+  ]
+}

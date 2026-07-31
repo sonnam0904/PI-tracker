@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -17,6 +18,12 @@ type Config struct {
 	Name       string
 	Schema     string // postgres search_path; rỗng = public
 	SQLitePath string
+	// LogLevel điều khiển log của GORM: silent (mặc định) | error | warn | info.
+	// info in MỌI câu SQL ra stdout — công tắc để soi truy vấn khi phát triển.
+	LogLevel string
+	// SlowQueryMS: câu SQL chạy lâu hơn mức này bị đánh dấu SLOW SQL. Chỉ có tác
+	// dụng khi LogLevel từ warn trở lên.
+	SlowQueryMS int
 }
 
 // Load reads .env (if present) then environment variables.
@@ -47,6 +54,13 @@ func Load() (*Config, error) {
 		Name:       get("DB_NAME", "taskmanager"),
 		Schema:     get("DB_SCHEMA", ""),
 		SQLitePath: get("DB_SQLITE_PATH", "taskmanager.db"),
+		LogLevel:   get("DB_LOG", "silent"),
+	}
+	// Giá trị lạ (gõ sai, để trống) rơi về 200ms thay vì 0 — ngưỡng 0 sẽ khiến
+	// GORM coi MỌI câu là slow query, làm log vô dụng đúng lúc cần đọc nó.
+	cfg.SlowQueryMS = 200
+	if v, err := strconv.Atoi(strings.TrimSpace(get("DB_SLOW_QUERY_MS", ""))); err == nil && v > 0 {
+		cfg.SlowQueryMS = v
 	}
 
 	// Các biến NGOÀI nhóm DB_ được đọc bằng os.Getenv ở nơi khác. Nạp chúng từ

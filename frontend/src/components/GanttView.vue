@@ -1,10 +1,11 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import {
-  ListTasks, ListPeople, ListSavedViews, CreateSavedView, UpdateSavedView, DeleteSavedView,
+  ListTasksInMonth, ListTaskRefs, GetTask, ListPeople, ListSavedViews, CreateSavedView,
+  UpdateSavedView, DeleteSavedView, ListTags,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
-import { monthStart, addMonths, daysInMonth, monthLabel, parseISODate, daysBetween } from '../lib/date'
+import { monthStart, addMonths, daysInMonth, monthLabel, parseISODate, daysBetween, ymKey } from '../lib/date'
 import { buildPeopleMeta, UNASSIGNED_COLOR } from '../lib/people'
 import { isBug } from '../lib/taskTypes'
 import { emptyConfig, parseConfig, matchesConfig, sameConfig, sortTasks } from '../lib/taskFilters'
@@ -28,8 +29,12 @@ const ROW_H = 46
 
 const view = ref('timeline') // 'timeline' | 'kanban' | 'table'
 const month = ref(monthStart(new Date()))
-const tasks = ref([])
+const tasks = ref([]) // task của THÁNG đang xem
+// taskRefs: {id, title} của mọi task workspace — picker phụ thuộc / task gốc sinh
+// bug trong TaskModal phải chọn được cả task ngoài tháng đang xem.
+const taskRefs = ref([])
 const people = ref([])
+const tags = ref([]) // [{id, name}] từ vựng tag của workspace
 const error = ref('')
 const editing = ref(undefined) // undefined = đóng, null = thêm mới, object = sửa
 
@@ -40,14 +45,39 @@ const personName = computed(() => {
   return map
 })
 
-async function load() {
+// Backend chỉ trả task của THÁNG ĐANG XEM (không còn tải cả workspace). Bộ lọc
+// `rows` bên dưới vẫn giữ nguyên: server trả tập bao, client cắt chính xác.
+//
+// reqSeq chống chồng response: bấm ◀ ▶ liên tiếp thì các lời gọi có thể về không
+// đúng thứ tự, và nếu cứ gán thẳng thì tháng hiển thị sẽ lệch khỏi dữ liệu.
+let reqSeq = 0
+async function loadTasks() {
+  const seq = ++reqSeq
   error.value = ''
   try {
-    ;[tasks.value, people.value, savedViews.value] = await Promise.all([
-      ListTasks(), ListPeople(), ListSavedViews(),
-    ])
+    const list = await ListTasksInMonth(ymKey(month.value))
+    if (seq === reqSeq) tasks.value = list
   } catch (e) {
-    error.value = String(e)
+    if (seq === reqSeq) error.value = String(e)
+  }
+}
+
+async function load() {
+  const seq = ++reqSeq
+  error.value = ''
+  try {
+    // Người, saved view, tag và danh sách task rút gọn không phụ thuộc tháng —
+    // chỉ nạp ở đây, không nạp lại mỗi lần đổi tháng.
+    const [list, p, v, tg, refs] = await Promise.all([
+      ListTasksInMonth(ymKey(month.value)), ListPeople(), ListSavedViews(), ListTags(),
+      ListTaskRefs(),
+    ])
+    // Phần không theo tháng thì gán luôn; riêng danh sách task phải nhường cho lời
+    // gọi mới hơn, nếu không một load() bắt đầu ở tháng cũ sẽ ghi đè tháng vừa chọn.
+    ;[people.value, savedViews.value, tags.value, taskRefs.value] = [p, v, tg, refs]
+    if (seq === reqSeq) tasks.value = list
+  } catch (e) {
+    if (seq === reqSeq) error.value = String(e)
   }
 }
 
@@ -109,14 +139,26 @@ async function removeView(v) {
 const focusActId = ref(0)
 
 // Mở modal của task được yêu cầu từ ngoài (click thông báo).
-function maybeOpenRequested() {
+async function maybeOpenRequested() {
   if (!props.openTaskId) return
-  const t = tasks.value.find(x => x.id === props.openTaskId)
+  // Chốt cả hai prop trước await: App xóa pending ngay khi nhận task-opened.
+  const id = props.openTaskId
+  const actId = props.openActivityId || 0
+  // Danh sách chỉ có task của tháng đang xem, nên task được nhắc có thể không nằm
+  // trong đó — hỏi thẳng server thay vì báo sai là "không tìm thấy".
+  let t = tasks.value.find(x => x.id === id)
+  if (!t) {
+    try {
+      t = await GetTask(id)
+    } catch {
+      t = null
+    }
+  }
   if (t) {
-    focusActId.value = props.openActivityId || 0
+    focusActId.value = actId
     editing.value = t
   } else {
-    error.value = `Không tìm thấy task #${props.openTaskId} trong workspace hiện tại (có thể đã bị xóa)`
+    error.value = `Không tìm thấy task #${id} trong workspace hiện tại (có thể đã bị xóa)`
   }
   emitEvents('task-opened')
 }
@@ -157,6 +199,9 @@ watch(view, v => { if (v === 'timeline') nextTick(measureHead) })
 function shift(n) {
   month.value = n === 0 ? monthStart(new Date()) : addMonths(month.value, n)
 }
+// Đổi tháng = nạp lại task của tháng đó. Đặt ở watch chứ không nhồi vào shift()
+// để mọi đường đổi tháng đều nạp, kể cả sau này thêm cách chọn tháng khác.
+watch(month, loadTasks)
 
 const days = computed(() => daysInMonth(month.value))
 const mStart = computed(() => month.value)
@@ -304,7 +349,6 @@ function onSaved() {
             <span class="dot" :style="{ background: personMeta[p.ID].color }"></span>{{ p.Name }}
           </span>
           <span><span class="dot" :style="{ background: UNASSIGNED_COLOR }"></span>Chưa gán</span>
-          <span class="hint" v-if="view === 'timeline'">· nét đứt = dự kiến theo estimate AI · mũi tên = phụ thuộc</span>
         </div>
       </div>
       <div class="month-nav">
@@ -332,7 +376,7 @@ function onSaved() {
 
     <!-- Thanh công cụ: tìm nhanh + Lọc / Sắp xếp / Nhóm động (kiểu Lark) -->
     <ViewToolbar
-      :cfg="config" :names="personName"
+      :cfg="config" :names="personName" :tags="tags"
       :shown="filteredRows.length" :total="rows.length"
       :groupable="view === 'table'"
     />
@@ -446,7 +490,8 @@ function onSaved() {
       v-if="editing !== undefined"
       :task="editing"
       :people="people"
-      :tasks="tasks"
+      :tasks="taskRefs"
+      :tags="tags"
       :focus-activity-id="focusActId"
       @close="onSaved"
       @saved="onSaved"

@@ -103,8 +103,10 @@ func BuildPDF(d Data) ([]byte, error) {
 
 	// 4. Phụ lục task
 	sectionTitle(fmt.Sprintf("4. Phụ lục — danh sách %d task hoàn thành", len(d.Tasks)))
-	tw := []float64{11, 35, 17, 19, 9, 11, 14, 12, 11, 18.5, 18.5, 14}
-	pdfHeaders := []string{"#ID", "Tiêu đề", "Phụ trách", "Loại", "Size", "AI", "Est khách", "Est AI", "Cycle", "Start", "Done", "Bug PS"}
+	// Tổng phải đúng pdfPageW (190) — thêm cột Tag nên co Tiêu đề/Phụ trách/Loại
+	// và hai cột ngày lại để lấy chỗ.
+	tw := []float64{11, 28, 15, 16, 9, 11, 14, 12, 11, 15, 15, 14, 19}
+	pdfHeaders := []string{"#ID", "Tiêu đề", "Phụ trách", "Loại", "Size", "AI", "Est khách", "Est AI", "Cycle", "Start", "Done", "Bug PS", "Tag"}
 	headerRow(tw, pdfHeaders, 7.5)
 	bodyFont(7.5)
 	for _, t := range d.Tasks {

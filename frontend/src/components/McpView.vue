@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { MCPStatus, StartMCPServer, StopMCPServer } from '../../wailsjs/go/main/App'
+import { MCPStatus, MCPTools, StartMCPServer, StopMCPServer } from '../../wailsjs/go/main/App'
 import { ClipboardSetText } from '../../wailsjs/runtime'
 
 // Trạng thái MCP server (running/url/token/port) — nguồn chân lý từ backend.
@@ -9,20 +9,29 @@ const error = ref('')
 const busy = ref(false)
 const copied = ref('') // key vừa copy để hiện "✓ Đã chép" tạm thời
 
-// Các công cụ MCP server cung cấp — mô tả cho người dùng biết client sẽ có gì.
-const tools = [
-  { name: 'get_session', desc: 'Xem phiên đang đăng nhập (user + workspace) mà công cụ thao tác dưới danh nghĩa.' },
-  { name: 'list_people', desc: 'Danh sách thành viên workspace — lấy id để gán người phụ trách.' },
-  { name: 'list_tasks', desc: 'Liệt kê toàn bộ task của workspace hiện tại.' },
-  { name: 'get_task', desc: 'Chi tiết đầy đủ: thông tin task, checklist, bình luận + hoạt động, lịch sử trạng thái.' },
-  { name: 'create_task', desc: 'Tạo task mới (kèm checklist khởi tạo nếu muốn).' },
-  { name: 'update_task', desc: 'Sửa thông tin task đã có.' },
-  { name: 'delete_task', desc: 'Xóa task (kèm checklist, hoạt động, lịch sử).' },
-  { name: 'add_todo', desc: 'Thêm mục vào checklist của task.' },
-  { name: 'toggle_todo', desc: 'Đánh dấu hoàn thành / bỏ hoàn thành một mục checklist.' },
-  { name: 'delete_todo', desc: 'Xóa một mục checklist.' },
-  { name: 'add_comment', desc: 'Bình luận vào task (hỗ trợ trả lời và @nhắc thành viên).' },
-]
+// Danh sách công cụ ĐỌC TỪ BACKEND (MCPTools) để không bao giờ liệt kê thiếu khi
+// thêm tool mới — bản hardcode trước đây đã bị lệch, thiếu list_tags.
+const tools = ref([])
+
+// Mô tả ngắn dành cho người đọc. Mô tả trong mcp.go viết cho LLM nên dài và
+// nhiều ràng buộc; ở đây ưu tiên bản ngắn, tool nào chưa có thì dùng luôn mô tả
+// của backend (vẫn hiện đủ, chỉ dài hơn).
+const SHORT_DESC = {
+  get_session: 'Xem phiên đang đăng nhập (user + workspace) mà công cụ thao tác dưới danh nghĩa.',
+  list_people: 'Danh sách thành viên workspace — lấy id để gán người phụ trách.',
+  list_tasks: 'Liệt kê toàn bộ task của workspace hiện tại.',
+  get_task: 'Chi tiết đầy đủ: thông tin task, checklist, bình luận + hoạt động, lịch sử trạng thái.',
+  create_task: 'Tạo task mới (kèm checklist khởi tạo nếu muốn).',
+  update_task: 'Sửa thông tin task đã có.',
+  delete_task: 'Xóa task (kèm checklist, hoạt động, lịch sử).',
+  add_todo: 'Thêm mục vào checklist của task.',
+  toggle_todo: 'Đánh dấu hoàn thành / bỏ hoàn thành một mục checklist.',
+  delete_todo: 'Xóa một mục checklist.',
+  add_comment: 'Bình luận vào task (hỗ trợ trả lời và @nhắc thành viên).',
+  list_tags: 'Liệt kê toàn bộ tag phân loại đang có trong workspace.',
+  create_tag: 'Tạo tag phân loại mới (tên đã có thì dùng lại tag cũ, không tạo trùng).',
+}
+const descOf = t => SHORT_DESC[t.name] || t.description
 
 // Đoạn cấu hình dán vào client MCP (Claude Code/Desktop, Cursor…) — transport
 // Streamable HTTP kèm bearer token. Chỉ có nghĩa khi server đang chạy.
@@ -46,7 +55,7 @@ const configSnippet = computed(() => {
 async function load() {
   error.value = ''
   try {
-    status.value = await MCPStatus()
+    ;[status.value, tools.value] = await Promise.all([MCPStatus(), MCPTools()])
   } catch (e) {
     error.value = String(e)
   }
@@ -159,7 +168,7 @@ async function copy(key, text) {
       <div class="mcp-tools">
         <div v-for="t in tools" :key="t.name" class="mcp-tool">
           <code class="mcp-tool-name">{{ t.name }}</code>
-          <span class="mcp-tool-desc">{{ t.desc }}</span>
+          <span class="mcp-tool-desc">{{ descOf(t) }}</span>
         </div>
       </div>
     </div>

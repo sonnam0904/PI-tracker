@@ -41,6 +41,7 @@ const COLS = [
   { field: 'status', label: 'Trạng thái' },
   { field: 'type', label: 'Loại' },
   { field: 'size', label: 'Size' },
+  { field: 'tags', label: 'Tag' },
   { field: 'aiUsed', label: 'AI' },
   { field: 'estimateCustomerDays', label: 'Est KH' },
   { field: 'estimateAiDays', label: 'Est AI' },
@@ -167,6 +168,10 @@ const renderItems = computed(() => {
               </td>
               <td>{{ TYPE_LABEL[it.task.type] || '—' }}</td>
               <td>{{ it.task.size }}</td>
+              <td class="tt-tags">
+                <span v-for="name in (it.task.tags || [])" :key="name" class="kb-tag tag">{{ name }}</span>
+                <span v-if="!(it.task.tags || []).length">—</span>
+              </td>
               <td>{{ it.task.aiUsed ? '✓' : '—' }}</td>
               <td>{{ it.task.estimateCustomerDays || '—' }}</td>
               <td>{{ it.task.estimateAiDays || '—' }}</td>

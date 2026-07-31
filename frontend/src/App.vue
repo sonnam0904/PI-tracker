@@ -11,6 +11,7 @@ import GanttView from './components/GanttView.vue'
 import TeamView from './components/TeamView.vue'
 import SettingsView from './components/SettingsView.vue'
 import McpView from './components/McpView.vue'
+import PluginView from './components/PluginView.vue'
 
 const tab = ref('dashboard')
 const tabs = [
@@ -18,6 +19,7 @@ const tabs = [
   { id: 'tasks', label: 'Tasks', ico: '☰' },
   { id: 'team', label: 'Team', ico: '👥' },
   { id: 'mcp', label: 'MCP', ico: '🔌' },
+  { id: 'plugin', label: 'Claude Plugin', ico: '🧩' },
   { id: 'settings', label: 'Cài đặt', ico: '⚙' },
 ]
 
@@ -400,6 +402,7 @@ async function openTaskFromNotif(n) {
         />
         <TeamView v-else-if="tab === 'team'" />
         <McpView v-else-if="tab === 'mcp'" />
+        <PluginView v-else-if="tab === 'plugin'" />
         <!-- Cài đặt chỉ owner: member (kể cả tự đặt tab=settings) rơi về Dashboard -->
         <SettingsView v-else-if="tab === 'settings' && isOwner" />
         <Dashboard v-else />

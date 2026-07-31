@@ -120,8 +120,11 @@ func (a *App) watchPgNotify(ctx context.Context) {
 }
 
 // listenOnce mở connection, LISTEN rồi vòng lặp nhận notification tới khi lỗi.
-// Ngay sau khi (re)subscribe thành công, bắn một lần refresh để bù các thay đổi
-// có thể đã lỡ trong lúc mất kết nối listener.
+// Ngay sau khi (re)subscribe thành công, bù cả HAI thứ có thể đã lỡ trong lúc
+// mất kết nối listener: thay đổi dữ liệu (event tasks:changed) và thông báo mới
+// (checkNewNotifications). NOTIFY không có hàng đợi — phát ra lúc không ai
+// LISTEN là mất hẳn — nên nếu không bù ở đây thì thông báo trong khoảng đứt kết
+// nối phải chờ nhịp poll kế tiếp mới tới.
 func (a *App) listenOnce(ctx context.Context, dsn string) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
@@ -132,7 +135,8 @@ func (a *App) listenOnce(ctx context.Context, dsn string) {
 	if _, err := conn.Exec(ctx, "LISTEN "+pgNotifyChannel); err != nil {
 		return
 	}
-	a.emitTasksChanged() // bù các thay đổi lỡ mất khi vừa (re)kết nối
+	a.emitTasksChanged()      // bù thay đổi dữ liệu lỡ mất khi vừa (re)kết nối
+	a.checkNewNotifications() // bù thông báo lỡ mất trong lúc không ai LISTEN
 
 	for {
 		n, err := conn.WaitForNotification(ctx)

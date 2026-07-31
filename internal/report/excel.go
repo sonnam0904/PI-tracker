@@ -87,7 +87,7 @@ func BuildExcel(d Data) ([]byte, error) {
 	// Sheet phụ lục task
 	const T = "Task hoàn thành"
 	f.NewSheet(T)
-	tw := []float64{5, 40, 16, 18, 8, 8, 15, 13, 12, 12, 12}
+	tw := []float64{5, 40, 16, 18, 8, 8, 15, 13, 12, 12, 12, 14, 24}
 	for i, w := range tw {
 		col, _ := excelize.ColumnNumberToName(i + 1)
 		f.SetColWidth(T, col, col, w)

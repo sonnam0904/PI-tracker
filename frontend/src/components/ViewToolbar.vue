@@ -10,6 +10,7 @@ import OrderPanel from './OrderPanel.vue'
 const props = defineProps({
   cfg: { type: Object, required: true },
   names: { type: Object, default: () => ({}) },
+  tags: { type: Array, default: () => [] }, // [{id, name}] cho ô chọn giá trị tag
   shown: { type: Number, default: 0 },
   total: { type: Number, default: 0 },
   groupable: { type: Boolean, default: true }, // nhóm chỉ có nghĩa ở bảng
@@ -26,7 +27,7 @@ function clearAll() {
   <div class="view-toolbar">
     <input v-model="cfg.q" class="filter-search" placeholder="🔍 Tìm theo tiêu đề / mô tả…" />
 
-    <FilterPanel :cfg="cfg" :names="names" />
+    <FilterPanel :cfg="cfg" :names="names" :tags="tags" />
     <OrderPanel :items="cfg.sorts" :fields="sortFields" label="Sắp xếp" icon="⇅" title="Sắp xếp theo" />
     <OrderPanel
       v-if="groupable"

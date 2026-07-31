@@ -4,6 +4,7 @@ package report
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"taskmanager/internal/models"
@@ -23,6 +24,9 @@ type Data struct {
 	// taskID → số bug quy về task gốc đó (phân tích nguồn gốc qua RelatedTaskID,
 	// bug mọi trạng thái, bất kể fix tháng nào). nil = không có dữ liệu.
 	OriginBugs map[uint]int
+	// taskID → tên các tag phân loại. Tag là quan hệ nhiều-nhiều nên không nằm
+	// trên models.Task; phải truyền vào đây để phụ lục in được cột Tag.
+	TaskTags map[uint][]string
 }
 
 func (d *Data) monthLabel() string {
@@ -281,7 +285,7 @@ func aiImpactLines(d Data) []kv {
 
 // ---- Phụ lục task ----
 
-var taskHeaders = []string{"#ID", "Tiêu đề", "Phụ trách", "Loại", "Size", "AI", "Est khách (ngày)", "Est AI (ngày)", "Cycle (ngày)", "Start", "Done", "Bug phát sinh"}
+var taskHeaders = []string{"#ID", "Tiêu đề", "Phụ trách", "Loại", "Size", "AI", "Est khách (ngày)", "Est AI (ngày)", "Cycle (ngày)", "Start", "Done", "Bug phát sinh", "Tag"}
 
 // taskRow dựng một dòng phụ lục. Cột đầu là ID task trong DB (không phải số
 // thứ tự) để khớp với tham chiếu "← #ID" ở cột Bug phát sinh.
@@ -316,9 +320,13 @@ func taskRow(d Data, t models.Task) []string {
 	} else if n := d.OriginBugs[t.ID]; n > 0 {
 		originCol = fmt.Sprintf("%d bug", n)
 	}
+	tagCol := "—"
+	if names := d.TaskTags[t.ID]; len(names) > 0 {
+		tagCol = strings.Join(names, ", ")
+	}
 	return []string{
 		fmt.Sprintf("#%d", t.ID), t.Title, assignee, t.Type.Label(), string(t.Size), ai,
 		f1(t.EstimateCustomerDays), f1(t.EstimateAIDays), cycle, date(t.StartDate), date(t.DoneDate),
-		originCol,
+		originCol, tagCol,
 	}
 }

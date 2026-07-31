@@ -1,0 +1,14 @@
+{
+  "name": "pi-tracker",
+  "owner": {
+    "name": "sonnn",
+    "email": "sonnn.uct@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "pi-tracker",
+      "source": "./plugins/pi-tracker",
+      "description": "Skill sinh báo cáo công việc hằng tháng từ dữ liệu PI Tracker."
+    }
+  ]
+}

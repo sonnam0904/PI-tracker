@@ -14,6 +14,7 @@ const props = defineProps({
   task: { type: Object, default: null }, // null = thêm mới
   people: { type: Array, default: () => [] },
   tasks: { type: Array, default: () => [] }, // toàn bộ task workspace — picker "task gốc" của bug
+  tags: { type: Array, default: () => [] }, // [{id, name}] tag đã có trong workspace
   // Bình luận cần scroll tới + làm nổi bật khi mở (từ thông báo mention/reply).
   focusActivityId: { type: Number, default: 0 },
 })
@@ -82,10 +83,13 @@ const form = reactive(props.task
       resolution: '',
       relatedTaskId: 0,
       dependsOn: [],
+      tags: [],
     })
 
-// Tách bản sao mảng phụ thuộc để sửa trong modal không đụng vào prop gốc.
+// Tách bản sao các mảng để sửa trong modal không đụng vào prop gốc (form là
+// spread NÔNG của task nên mảng vẫn dùng chung tham chiếu với dòng trong bảng).
 form.dependsOn = Array.isArray(form.dependsOn) ? [...form.dependsOn] : []
+form.tags = Array.isArray(form.tags) ? [...form.tags] : []
 
 // ---- Bug tracking ----
 const isBug = computed(() => form.type === TYPE_BUG)
@@ -126,6 +130,64 @@ function onDepKeydown(e) {
 // Trễ một nhịp để mousedown trên gợi ý kịp chạy trước khi đóng.
 function onDepBlur() {
   setTimeout(() => (depPicker.open = false), 150)
+}
+
+// ---- Phân loại tag: combobox chọn tag cũ HOẶC tạo tag mới ngay khi gõ ----
+// form.tags giữ TÊN tag (không phải id) — backend tự tạo tag cho tên chưa có,
+// nên modal không phải quản lý id và không cần lưu tag trước khi lưu task.
+const tagPicker = reactive({ open: false, query: '', idx: 0 })
+
+const tagQuery = computed(() => tagPicker.query.trim().replace(/\s+/g, ' '))
+// So trùng không phân biệt chữ hoa/thường, khớp cách backend gộp tag.
+const hasTag = name => form.tags.some(x => x.toLowerCase() === name.toLowerCase())
+
+// Ứng viên = tag đã có trong workspace, chưa gắn vào task này, khớp text gõ vào.
+const tagMatches = computed(() => {
+  const q = tagQuery.value.toLowerCase()
+  const base = props.tags.filter(tg => !hasTag(tg.name))
+  const list = q ? base.filter(tg => tg.name.toLowerCase().includes(q)) : base
+  return list.slice(0, 8)
+})
+// Cho tạo mới khi đang gõ một tên chưa khớp CHÍNH XÁC tag nào (kể cả khi vẫn còn
+// gợi ý khớp một phần: "Hạ tầng" đã có vẫn tạo được "Hạ tầng chat").
+const canCreateTag = computed(() => {
+  const q = tagQuery.value
+  if (!q) return false
+  if (hasTag(q)) return false
+  return !props.tags.some(tg => tg.name.toLowerCase() === q.toLowerCase())
+})
+
+function addTag(name) {
+  const clean = String(name || '').trim().replace(/\s+/g, ' ')
+  if (clean && !hasTag(clean)) form.tags.push(clean)
+  tagPicker.query = ''
+  tagPicker.idx = 0
+}
+function removeTag(name) {
+  form.tags = form.tags.filter(x => x !== name)
+}
+// Enter: chọn gợi ý đang sáng; không có gợi ý nào thì tạo tag mới từ text đã gõ.
+function onTagKeydown(e) {
+  const list = tagMatches.value
+  if (e.key === 'Escape') { tagPicker.open = false; return }
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    const pick = list[tagPicker.idx]
+    if (pick) addTag(pick.name)
+    else if (canCreateTag.value) addTag(tagQuery.value)
+    return
+  }
+  // Backspace trên ô rỗng bỏ chip cuối — thói quen chuẩn của ô nhập dạng chip.
+  if (e.key === 'Backspace' && !tagPicker.query && form.tags.length) {
+    removeTag(form.tags[form.tags.length - 1])
+    return
+  }
+  if (!list.length) return
+  if (e.key === 'ArrowDown') { e.preventDefault(); tagPicker.idx = (tagPicker.idx + 1) % list.length }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); tagPicker.idx = (tagPicker.idx - 1 + list.length) % list.length }
+}
+function onTagBlur() {
+  setTimeout(() => (tagPicker.open = false), 150)
 }
 
 const BUG_TEMPLATE = `## Các bước tái hiện
@@ -388,6 +450,7 @@ async function save() {
       reporterId: Number(form.reporterId) || 0,
       relatedTaskId: Number(form.relatedTaskId) || 0,
       dependsOn: (form.dependsOn || []).map(Number),
+      tags: (form.tags || []).map(String),
     })
     emit('saved')
   } catch (e) {
@@ -445,6 +508,48 @@ async function doDelete() {
               <label>Tiêu đề *</label>
               <input v-model="form.title" placeholder="Tên task" autofocus />
             </div>
+
+            <!-- Tag đặt ngay dưới tiêu đề: nó là thứ phân loại task, cùng nhóm với
+                 việc đặt tên, nên thuộc phần đầu form. Trước đây nằm cuối cùng sau
+                 Phụ thuộc — phải cuộn hết form mới thấy, trong khi tag lại là khóa
+                 gom hạng mục của báo cáo tháng nên hay bị quên gắn. -->
+            <div class="field full">
+              <label>Phân loại tag</label>
+              <div v-if="form.tags.length" class="dep-chips">
+                <span v-for="name in form.tags" :key="name" class="dep-chip tag-chip">
+                  {{ name }}
+                  <button type="button" class="dep-del" title="Bỏ tag" @click="removeTag(name)">✕</button>
+                </span>
+              </div>
+              <div class="dep-search">
+                <input
+                  v-model="tagPicker.query"
+                  placeholder="Chọn tag đã có hoặc gõ tên mới rồi Enter…"
+                  @focus="tagPicker.open = true"
+                  @input="tagPicker.open = true; tagPicker.idx = 0"
+                  @keydown="onTagKeydown"
+                  @blur="onTagBlur"
+                />
+                <div v-if="tagPicker.open && (tagMatches.length || canCreateTag)" class="dep-pop">
+                  <button
+                    v-for="(tg, i) in tagMatches" :key="tg.id"
+                    type="button" class="mention-item" :class="{ active: i === tagPicker.idx }"
+                    @mousedown.prevent="addTag(tg.name)"
+                    @mousemove="tagPicker.idx = i"
+                  >{{ tg.name }}</button>
+                  <button
+                    v-if="canCreateTag"
+                    type="button" class="mention-item tag-create"
+                    @mousedown.prevent="addTag(tagQuery)"
+                  >＋ Tạo tag mới “{{ tagQuery }}”</button>
+                </div>
+                <div v-else-if="tagPicker.open && !props.tags.length && !tagQuery" class="dep-pop dep-pop-empty">
+                  Workspace chưa có tag nào — gõ tên để tạo tag đầu tiên
+                </div>
+              </div>
+              <span class="hint">Gắn nhiều tag được. Tag mới tạo sẽ dùng lại được cho các task sau.</span>
+            </div>
+
             <div class="field full">
               <label>
                 Mô tả
@@ -774,4 +879,14 @@ async function doDelete() {
 .dep-pop-empty {
   padding: 8px 10px; color: var(--text-faint); font-size: 12.5px;
 }
+
+/* Tag: chip trung tính để không lẫn với chip phụ thuộc (màu accent) */
+.tag-chip { background: var(--bg); border-color: var(--border-soft); }
+/* Dòng "tạo tag mới" tách khỏi các gợi ý bằng một vạch mảnh */
+.tag-create {
+  color: var(--accent);
+  border-top: 1px solid var(--border-soft);
+  margin-top: 2px; padding-top: 8px;
+}
+.tag-create:hover { background: var(--accent-soft); }
 </style>

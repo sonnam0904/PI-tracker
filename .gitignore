@@ -13,3 +13,6 @@ openwiki/
 !CODE_OF_CONDUCT.md
 !CONTRIBUTING.md
 !SECURITY.md
+!plugins/**/*.md
+plugins/**/__pycache__/
+CLAUDE.md

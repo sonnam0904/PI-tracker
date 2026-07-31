@@ -19,10 +19,26 @@ func NewDependencyService(db *gorm.DB) *DependencyService {
 // DependsOnMap trả về map taskID → danh sách task phải xong trước (predecessor),
 // cho cả workspace trong một query — dùng dựng mũi tên Gantt và cờ phụ thuộc.
 func (s *DependencyService) DependsOnMap(wsID uint) (map[uint][]uint, error) {
+	return s.dependsOnMap(wsID, nil)
+}
+
+// DependsOnMapForTasks như DependsOnMap nhưng chỉ lấy phụ thuộc CỦA các task được
+// nêu tên — dùng khi danh sách task đã bị lọc theo kỳ, để số hàng đọc lên tỉ lệ
+// với kết quả trả về chứ không với kích thước workspace.
+func (s *DependencyService) DependsOnMapForTasks(wsID uint, taskIDs []uint) (map[uint][]uint, error) {
+	if len(taskIDs) == 0 {
+		return map[uint][]uint{}, nil
+	}
+	return s.dependsOnMap(wsID, taskIDs)
+}
+
+func (s *DependencyService) dependsOnMap(wsID uint, taskIDs []uint) (map[uint][]uint, error) {
+	q := s.db.Where("workspace_id = ?", wsID)
+	if taskIDs != nil {
+		q = q.Where("task_id IN ?", taskIDs)
+	}
 	var deps []models.TaskDependency
-	err := s.db.Where("workspace_id = ?", wsID).
-		Order("blocked_by_id").Find(&deps).Error
-	if err != nil {
+	if err := q.Order("blocked_by_id").Find(&deps).Error; err != nil {
 		return nil, err
 	}
 	m := make(map[uint][]uint, len(deps))

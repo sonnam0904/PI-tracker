@@ -21,6 +21,9 @@ export const FIELDS = [
   { key: 'size', label: 'Size', type: 'select', options: selOpts(SIZES) },
   { key: 'priority', label: 'Ưu tiên', type: 'select', options: selOpts(PRIORITIES) },
   { key: 'aiUsed', label: 'Dùng AI', type: 'bool' },
+  // tags = nhiều giá trị: options đổ lúc chạy từ ListTags (không cố định trong
+  // registry), và khi nhóm thì một task xuất hiện ở nhiều nhóm — xem groupBuckets.
+  { key: 'tags', label: 'Phân loại tag', type: 'tags' },
   { key: 'dueState', label: 'Tình trạng hạn', type: 'duestate', sort: false,
     options: [
       { value: 'overdue', label: '⏰ Quá hạn' },
@@ -66,6 +69,14 @@ const OPS = {
   ],
   bool: [{ value: 'is', label: 'là' }],
   duestate: [{ value: 'is', label: 'là' }],
+  // Mỗi điều kiện xét MỘT tag. Muốn "có tất cả" / "có bất kỳ" thì thêm nhiều
+  // điều kiện rồi chọn chế độ khớp all/any sẵn có — không cần toán tử riêng.
+  tags: [
+    { value: 'has', label: 'có tag' },
+    { value: 'notHas', label: 'không có tag' },
+    { value: 'isEmpty', label: 'chưa gắn tag', noInput: true },
+    { value: 'isNotEmpty', label: 'đã gắn tag', noInput: true },
+  ],
   number: [
     { value: 'eq', label: '=' },
     { value: 'ne', label: '≠' },
@@ -127,6 +138,8 @@ export function rawValue(t, key) {
 
 function isBlank(v, type) {
   if (v === undefined || v === null || v === '') return true
+  // Field nhiều giá trị: mảng rỗng mới là trống ([] !== '' nên phải xét riêng).
+  if (Array.isArray(v)) return v.length === 0
   if (type === 'person' && !v) return true
   return false
 }
@@ -179,6 +192,14 @@ export function matchesCondition(t, c) {
       if (c.op === 'isNot') return val !== target
       return true
     }
+    case 'tags': {
+      // So không phân biệt chữ hoa/thường cho khớp cách backend gộp tag.
+      const list = Array.isArray(v) ? v.map(x => String(x).toLowerCase()) : []
+      const target = String(cv).toLowerCase()
+      if (c.op === 'has') return list.includes(target)
+      if (c.op === 'notHas') return !list.includes(target)
+      return true
+    }
     case 'number': {
       if (isBlank(v, type)) return false
       const val = Number(v), target = Number(cv)
@@ -219,6 +240,10 @@ export function sortValue(t, key, ctx) {
     case 'date': return v ? String(v).slice(0, 10) : ''
     case 'bool': return v ? 1 : 0
     case 'select': return f.numeric ? (Number(v) || 0) : (v || '')
+    // Sắp theo tag đầu tiên theo alphabet — task chưa gắn tag coi như trống.
+    case 'tags': return Array.isArray(v) && v.length
+      ? [...v].map(String).sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1)[0].toLowerCase()
+      : ''
     default: return String(v ?? '').toLowerCase()
   }
 }
@@ -249,4 +274,32 @@ export function groupLabel(t, key, ctx) {
     case 'date': return String(v).slice(0, 10)
     default: return String(v)
   }
+}
+
+// Các nhóm mà một task thuộc về, dạng [{ key, label, sortVal }].
+//
+// Field một giá trị luôn cho đúng 1 nhóm. Field nhiều giá trị (tags) cho NHIỀU
+// nhóm — task gắn 3 tag sẽ hiện ở cả 3 nhóm, nên tổng số dòng trong các nhóm
+// lớn hơn số task (đó là ý muốn: "xem mọi task thuộc tag X").
+//
+// Nhãn và giá trị sắp xếp đi kèm từng nhóm thay vì suy ra từ task, vì với tag
+// thì nhãn là TÊN TAG của nhóm đó, không phải một thuộc tính của task.
+export function groupBuckets(t, key, ctx) {
+  const f = FIELD_BY_KEY[key]
+  if (f?.type === 'tags') {
+    const v = rawValue(t, key)
+    if (!Array.isArray(v) || !v.length) {
+      return [{ key: '∅', label: '(Chưa gắn tag)', sortVal: '' }]
+    }
+    return v.map(name => ({
+      key: String(name),
+      label: String(name),
+      sortVal: String(name).toLowerCase(),
+    }))
+  }
+  return [{
+    key: groupKey(t, key),
+    label: groupLabel(t, key, ctx),
+    sortVal: sortValue(t, key, ctx),
+  }]
 }

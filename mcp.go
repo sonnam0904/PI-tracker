@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"taskmanager/internal/mcp"
 	"taskmanager/internal/models"
+	"taskmanager/internal/service"
 )
 
 // mcpDefaultPort — cổng localhost mặc định cho MCP server. Chọn số cao ít va
@@ -35,6 +37,26 @@ func (a *App) mcpStatusDTO() MCPStatusDTO {
 // MCPStatus trả về trạng thái MCP server hiện tại (cho trang MCP khởi tạo).
 func (a *App) MCPStatus() MCPStatusDTO {
 	return a.mcpStatusDTO()
+}
+
+// MCPToolDTO là một dòng trong danh sách công cụ hiển thị ở trang MCP.
+type MCPToolDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// MCPTools trả về danh sách công cụ MCP LẤY TỪ CHÍNH bộ công cụ server dùng, để
+// trang MCP không thể liệt kê thiếu khi thêm tool mới. Trước đây trang này
+// hardcode danh sách nên đã bị lệch (thiếu list_tags).
+//
+// Gọi được cả khi server đang tắt: danh sách là tĩnh, không phụ thuộc trạng thái.
+func (a *App) MCPTools() []MCPToolDTO {
+	tools := a.mcpTools()
+	out := make([]MCPToolDTO, len(tools))
+	for i, t := range tools {
+		out[i] = MCPToolDTO{Name: t.Name, Description: t.Description}
+	}
+	return out
 }
 
 // StartMCPServer bật MCP server localhost với bộ công cụ thao tác task bind vào
@@ -79,6 +101,88 @@ type mcpTaskDetail struct {
 	StatusHistory []models.StatusChange `json:"statusHistory"`
 }
 
+// mcpTaskFilter là bộ lọc thời gian của list_tasks. Mọi field rỗng = không lọc,
+// trả về toàn bộ task của workspace như trước.
+type mcpTaskFilter struct {
+	Month     string `json:"month"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	DateField string `json:"dateField"`
+	// All: cố ý lấy TOÀN BỘ task của workspace, bỏ qua mọi giới hạn thời gian.
+	// Phải khai báo tường minh — xem resolve().
+	All bool `json:"all"`
+}
+
+// mcpDateFields là các giá trị dateField hợp lệ, hiện luôn trong InputSchema.
+var mcpDateFields = []string{
+	string(service.TaskDateTouched), string(service.TaskDateStart),
+	string(service.TaskDateDone), string(service.TaskDateCreated), string(service.TaskDateDue),
+	string(service.TaskDateOverlap),
+}
+
+// resolve kiểm tra tham số và đổi thành bộ lọc của tầng service. Chỉ làm việc
+// phân tích/validate — việc lọc thật do SQL trong TaskService.ListFiltered đảm,
+// nên số task trả về từ DB luôn đúng bằng số task thuộc kỳ.
+func (f mcpTaskFilter) resolve() (service.TaskDateFilter, error) {
+	from, to := strings.TrimSpace(f.From), strings.TrimSpace(f.To)
+	month := strings.TrimSpace(f.Month)
+	hasRange := month != "" || from != "" || to != ""
+
+	// Quét cả workspace phải là hành động CỐ Ý, không phải giá trị mặc định khi
+	// caller quên truyền gì. Không có ràng buộc này thì một lời gọi thiếu tham số
+	// lặng lẽ kéo toàn bộ lịch sử task về — càng dùng lâu càng nặng, và không có
+	// dấu hiệu nào cho thấy đó là nhầm lẫn chứ không phải chủ ý.
+	if !hasRange && !f.All {
+		return service.TaskDateFilter{}, fmt.Errorf(
+			"cần khoảng thời gian: truyền month=\"YYYY-MM\" cho một tháng, hoặc from/to cho khoảng ngày bất kỳ. " +
+				"Nếu thật sự cần TOÀN BỘ task của workspace thì truyền all=true")
+	}
+	// all=true kèm khoảng thời gian là mâu thuẫn: im lặng chọn một bên sẽ khiến
+	// caller tưởng mình nhận được thứ kia.
+	if f.All && hasRange {
+		return service.TaskDateFilter{}, fmt.Errorf("all=true nghĩa là lấy toàn bộ — không dùng kèm month/from/to")
+	}
+	if f.All {
+		return service.TaskDateFilter{}, nil // không lọc
+	}
+
+	if month != "" {
+		// month và from/to loại nhau: nhận cả hai rồi im lặng bỏ một bên là kiểu
+		// sai âm thầm — caller tưởng đã lọc hẹp hơn thực tế.
+		if from != "" || to != "" {
+			return service.TaskDateFilter{}, fmt.Errorf("chỉ dùng month HOẶC from/to, không dùng cả hai")
+		}
+		start, end, err := monthBounds(month)
+		if err != nil {
+			return service.TaskDateFilter{}, err
+		}
+		from, to = start.Format(dateLayout), end.Format(dateLayout)
+	}
+	fromT, err := parseDate(from)
+	if err != nil {
+		return service.TaskDateFilter{}, err
+	}
+	toT, err := parseDate(to)
+	if err != nil {
+		return service.TaskDateFilter{}, err
+	}
+	if fromT != nil && toT != nil && toT.Before(*fromT) {
+		return service.TaskDateFilter{}, fmt.Errorf("from (%s) phải trước hoặc bằng to (%s)", from, to)
+	}
+	field := service.TaskDateField(strings.TrimSpace(f.DateField))
+	if field == "" {
+		field = service.TaskDateTouched
+	}
+	switch field {
+	case service.TaskDateTouched, service.TaskDateStart, service.TaskDateDone,
+		service.TaskDateCreated, service.TaskDateDue, service.TaskDateOverlap:
+	default:
+		return service.TaskDateFilter{}, fmt.Errorf("dateField %q không hợp lệ (chọn: %s)",
+			string(field), strings.Join(mcpDateFields, ", "))
+	}
+	return service.TaskDateFilter{Field: field, From: fromT, To: toT}, nil
+}
+
 func (a *App) mcpTools() []mcp.Tool {
 	// decode giải mã arguments vào đích, trả lỗi thân thiện nếu sai định dạng.
 	decode := func(args json.RawMessage, dst any) error {
@@ -114,6 +218,7 @@ func (a *App) mcpTools() []mcp.Tool {
 		"relatedTaskId":        map[string]any{"type": "integer", "description": "Task gốc sinh bug"},
 		"reporterId":           map[string]any{"type": "integer", "description": "User.ID người báo bug"},
 		"dependsOn":            map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "ID các task phải hoàn thành trước (finish-to-start)"},
+		"tags":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tên các tag phân loại. Tên chưa có sẽ được tạo mới, tên đã có dùng lại tag cũ (không phân biệt chữ hoa/thường). Truyền [] để bỏ hết tag. Xem list_tags."},
 		"initialTodos":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Checklist tạo sẵn — CHỈ khi tạo task mới"},
 	}
 	objSchema := func(props map[string]any, required ...string) map[string]any {
@@ -155,11 +260,57 @@ func (a *App) mcpTools() []mcp.Tool {
 			},
 		},
 		{
-			Name:        "list_tasks",
-			Description: "Liệt kê tất cả task của workspace hiện tại (kèm tiến độ checklist và phụ thuộc).",
+			Name:        "list_tags",
+			Description: "Liệt kê TOÀN BỘ tag phân loại đang có trong workspace hiện tại ({id, name}, sắp theo tên). Gọi tool này TRƯỚC khi set trường tags của task để chọn lại tag cũ thay vì tạo tag trùng nghĩa.",
 			InputSchema: objSchema(map[string]any{}),
 			Handler: func(json.RawMessage) (any, error) {
-				return a.ListTasks()
+				return a.ListTags()
+			},
+		},
+		{
+			Name: "create_tag",
+			Description: "Tạo một tag phân loại mới trong workspace hiện tại mà không cần gắn vào task nào. " +
+				"Idempotent: tên đã tồn tại (không phân biệt chữ hoa/thường, khoảng trắng thừa được gộp) thì " +
+				"KHÔNG lỗi mà trả về tag cũ với created=false. Trả về {tag:{id,name,...}, created:bool}. " +
+				"Lưu ý: khi set trường tags của task, tên chưa có cũng tự được tạo — chỉ cần tool này khi muốn " +
+				"tạo sẵn từ vựng tag trước lúc gắn cho task.",
+			InputSchema: objSchema(map[string]any{
+				"name": map[string]any{"type": "string", "description": "Tên tag (tối đa 40 ký tự, không để trống)"},
+			}, "name"),
+			Handler: func(args json.RawMessage) (any, error) {
+				var in struct {
+					Name string `json:"name"`
+				}
+				if err := decode(args, &in); err != nil {
+					return nil, err
+				}
+				return a.CreateTag(in.Name)
+			},
+		},
+		{
+			Name: "list_tasks",
+			Description: "Liệt kê task của workspace hiện tại (kèm tiến độ checklist, phụ thuộc và tag phân loại). " +
+				"BẮT BUỘC giới hạn phạm vi: truyền month=\"YYYY-MM\" cho một tháng, hoặc from/to cho khoảng ngày bất kỳ. " +
+				"Gọi không tham số sẽ BÁO LỖI — mỗi task mang cả description nên lấy trọn workspace là payload rất lớn và nặng dần theo thời gian dùng. " +
+				"Chỉ khi thật sự cần toàn bộ (rà soát/xuất dữ liệu) thì truyền all=true.",
+			InputSchema: objSchema(map[string]any{
+				"month": map[string]any{"type": "string", "description": "Lọc gọn theo tháng, dạng YYYY-MM (vd 2026-06). Tương đương from = ngày 1 và to = ngày cuối tháng đó. Không dùng cùng from/to."},
+				"from":  map[string]any{"type": "string", "description": "Đầu khoảng lọc, YYYY-MM-DD (tính CẢ ngày này). Bỏ trống = không chặn đầu."},
+				"to":    map[string]any{"type": "string", "description": "Cuối khoảng lọc, YYYY-MM-DD (tính CẢ ngày này). Bỏ trống = không chặn cuối."},
+				"all":   map[string]any{"type": "boolean", "description": "true = CỐ Ý lấy toàn bộ task của workspace, không giới hạn thời gian. Chỉ dùng khi thật sự cần (rà soát, xuất dữ liệu); không dùng kèm month/from/to."},
+				"dateField": map[string]any{"type": "string", "enum": mcpDateFields,
+					"description": "Ngày nào của task phải nằm trong khoảng. touched (mặc định) = bắt đầu HOẶC hoàn thành trong khoảng, dùng cho báo cáo kỳ; task chưa có ngày tương ứng bị loại. overlap = khoảng sống start→done GIAO với kỳ, kèm cả task chưa xong và task chưa có ngày bắt đầu — dùng khi cần \"việc còn sống trong kỳ\" chứ không phải \"việc của kỳ\"."},
+			}),
+			Handler: func(args json.RawMessage) (any, error) {
+				var in mcpTaskFilter
+				if err := decode(args, &in); err != nil {
+					return nil, err
+				}
+				filter, err := in.resolve()
+				if err != nil {
+					return nil, err
+				}
+				return a.listTasks(filter)
 			},
 		},
 		{
@@ -353,18 +504,9 @@ func (a *App) mcpTools() []mcp.Tool {
 // mcpGetTaskDetail gom toàn bộ dữ liệu chi tiết của một task, tái dùng các
 // binding có sẵn (mỗi cái đã tự kiểm tra task thuộc workspace hiện tại).
 func (a *App) mcpGetTaskDetail(taskID uint) (mcpTaskDetail, error) {
-	t, _, err := a.taskInWorkspace(taskID)
+	dto, err := a.GetTask(taskID)
 	if err != nil {
 		return mcpTaskDetail{}, err
-	}
-	dto := taskToDTO(t)
-	if deps, err := a.dependencies.PredecessorsOf(t.ID); err == nil {
-		dto.DependsOn = deps
-	}
-	if counts, err := a.todos.Counts(); err == nil {
-		if c, ok := counts[t.ID]; ok {
-			dto.TodoTotal, dto.TodoDone = c[0], c[1]
-		}
 	}
 
 	todos, err := a.todos.List(taskID)

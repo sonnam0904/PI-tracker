@@ -166,7 +166,10 @@ type Task struct {
 	// BlockedDays bị trừ khỏi Cycle Time khi phân tích.
 	BlockedDays float64
 
-	StartDate *time.Time // ngày bắt đầu code thực sự
+	// Cả ba ngày đều đánh index: chúng là cột lọc của TaskDateFilter (list_tasks
+	// theo kỳ, báo cáo tháng), nên quét bảng ở đây là quét theo số task của cả
+	// workspace thay vì theo số task thuộc kỳ.
+	StartDate *time.Time `gorm:"index"` // ngày bắt đầu code thực sự
 	DueDate   *time.Time `gorm:"index"` // hạn chót cam kết, nil = không có deadline
 	DoneDate  *time.Time `gorm:"index"` // ngày merge PR / deploy staging
 

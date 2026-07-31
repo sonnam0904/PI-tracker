@@ -8,6 +8,9 @@ import { newCondition } from '../lib/taskFilters'
 const props = defineProps({
   cfg: { type: Object, required: true },
   names: { type: Object, default: () => ({}) }, // userID → tên
+  // Tag của workspace. Options của field 'tags' đến từ dữ liệu lúc chạy, không
+  // nằm trong registry — cùng lý do như 'person' nhận `names`.
+  tags: { type: Array, default: () => [] },
 })
 
 const open = ref(false)
@@ -78,6 +81,10 @@ const needsInput = c => !opDef(c.field, c.op)?.noInput
               <option value="">Chọn…</option>
               <option value="yes">Có</option>
               <option value="no">Không</option>
+            </select>
+            <select v-else-if="fieldType(c) === 'tags'" v-model="c.value" class="vp-sel">
+              <option value="">Chọn tag…</option>
+              <option v-for="tg in tags" :key="tg.id" :value="tg.name">{{ tg.name }}</option>
             </select>
             <select v-else-if="fieldType(c) === 'duestate'" v-model="c.value" class="vp-sel">
               <option value="">Chọn…</option>

@@ -1,15 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/glebarez/sqlite"
+	gormpg "gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
 	"taskmanager/internal/models"
+	"taskmanager/internal/service"
 )
 
 func timeNowDate() string { return time.Now().Format(dateLayout) }
@@ -24,7 +27,8 @@ func testAppDB(t *testing.T) (*App, *gorm.DB) {
 		&models.TodoItem{}, &models.Activity{}, &models.StatusChange{},
 		&models.User{}, &models.Workspace{}, &models.WorkspaceMember{},
 		&models.Invitation{}, &models.Notification{}, &models.SavedView{},
-		&models.Session{}, &models.TaskDependency{}); err != nil {
+		&models.Session{}, &models.TaskDependency{},
+		&models.Tag{}, &models.TaskTag{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return NewApp(db), db
@@ -1669,5 +1673,759 @@ func TestTaskDependencies(t *testing.T) {
 	}
 	if got := findTask(t, app, b).DependsOn; len(got) != 0 {
 		t.Fatalf("sau xóa A, B.DependsOn = %v, want rỗng", got)
+	}
+}
+
+// TestTaskTags phủ toàn bộ hợp đồng của trường "Phân loại tag": tạo mới khi gõ
+// tên chưa có, dùng lại tag cũ khi tên đã có (không phân biệt chữ hoa/thường),
+// gắn nhiều tag cho một task, và dọn liên kết khi xóa task.
+func TestTaskTags(t *testing.T) {
+	app := testApp(t)
+	loginApp(t, app, "alice")
+
+	mk := func(title string, tags ...string) uint {
+		if err := app.SaveTask(TaskDTO{Title: title, Status: "Todo", Tags: tags}); err != nil {
+			t.Fatalf("tạo %s: %v", title, err)
+		}
+		list, _ := app.ListTasks()
+		return list[0].ID // List sắp created_at DESC → mới nhất đầu
+	}
+
+	// Tên chưa có → tạo tag mới. Một task gắn được nhiều tag.
+	a := mk("A", "Hạ tầng", "Concurrency")
+	if got := findTask(t, app, a).Tags; len(got) != 2 {
+		t.Fatalf("A.Tags = %v, want 2 phần tử", got)
+	}
+	tags, err := app.ListTags()
+	if err != nil {
+		t.Fatalf("list tags: %v", err)
+	}
+	if len(tags) != 2 {
+		t.Fatalf("ListTags = %v, want 2 tag", tags)
+	}
+
+	// Tên đã có (khác chữ hoa/thường + thừa khoảng trắng) → DÙNG LẠI tag cũ,
+	// không tạo tag thứ ba.
+	b := mk("B", "  hạ   tầng  ")
+	if got := findTask(t, app, b).Tags; len(got) != 1 || got[0] != "Hạ tầng" {
+		t.Fatalf("B.Tags = %v, want [\"Hạ tầng\"] (tên gốc của tag cũ)", got)
+	}
+	if tags, _ = app.ListTags(); len(tags) != 2 {
+		t.Fatalf("sau khi gắn tag trùng, ListTags = %v, want vẫn 2 tag", tags)
+	}
+
+	// Tên trùng trong CÙNG một lần lưu bị khử, không tạo hàng join trùng.
+	if err := app.SaveTask(TaskDTO{ID: b, Title: "B", Status: "Todo",
+		Tags: []string{"Hạ tầng", "HẠ TẦNG"}}); err != nil {
+		t.Fatalf("B tag trùng: %v", err)
+	}
+	if got := findTask(t, app, b).Tags; len(got) != 1 {
+		t.Fatalf("B.Tags = %v, want 1 phần tử sau khử trùng", got)
+	}
+
+	// Gửi mảng rỗng = bỏ hết tag của task.
+	if err := app.SaveTask(TaskDTO{ID: b, Title: "B", Status: "Todo", Tags: []string{}}); err != nil {
+		t.Fatalf("B bỏ tag: %v", err)
+	}
+	if got := findTask(t, app, b).Tags; len(got) != 0 {
+		t.Fatalf("B.Tags = %v, want rỗng", got)
+	}
+	// Tag vẫn còn trong từ vựng workspace để chọn lại về sau.
+	if tags, _ = app.ListTags(); len(tags) != 2 {
+		t.Fatalf("sau khi bỏ tag khỏi task, ListTags = %v, want vẫn 2 tag", tags)
+	}
+
+	// Tên quá dài bị từ chối trước khi lưu task.
+	long := strings.Repeat("x", 41)
+	if err := app.SaveTask(TaskDTO{Title: "C", Status: "Todo", Tags: []string{long}}); err == nil ||
+		!strings.Contains(err.Error(), "quá dài") {
+		t.Fatalf("muốn lỗi tên tag quá dài, nhận: %v", err)
+	}
+
+	// DeleteTag bỏ tag khỏi workspace VÀ khỏi task đang gắn.
+	var infraID uint
+	for _, tg := range tags {
+		if tg.Name == "Hạ tầng" {
+			infraID = tg.ID
+		}
+	}
+	if infraID == 0 {
+		t.Fatalf("không tìm thấy tag \"Hạ tầng\" trong %v", tags)
+	}
+	if err := app.DeleteTag(infraID); err != nil {
+		t.Fatalf("xóa tag: %v", err)
+	}
+	if got := findTask(t, app, a).Tags; len(got) != 1 || got[0] != "Concurrency" {
+		t.Fatalf("sau xóa tag, A.Tags = %v, want [\"Concurrency\"]", got)
+	}
+
+	// Xóa task → liên kết tag biến mất, tag vẫn còn trong workspace.
+	if err := app.DeleteTask(a); err != nil {
+		t.Fatalf("xóa A: %v", err)
+	}
+	if tags, _ = app.ListTags(); len(tags) != 1 || tags[0].Name != "Concurrency" {
+		t.Fatalf("sau xóa task, ListTags = %v, want còn [\"Concurrency\"]", tags)
+	}
+}
+
+// Tag là từ vựng riêng của từng workspace: người ở workspace khác không thấy
+// tag của workspace mình, và không xóa được tag không thuộc workspace mình.
+func TestTagsWorkspaceScoped(t *testing.T) {
+	app := testApp(t)
+
+	loginApp(t, app, "alice")
+	if err := app.SaveTask(TaskDTO{Title: "task alice", Status: "Todo",
+		Tags: []string{"Chỉ của alice"}}); err != nil {
+		t.Fatalf("tạo task alice: %v", err)
+	}
+	aliceTags, _ := app.ListTags()
+	if len(aliceTags) != 1 {
+		t.Fatalf("alice ListTags = %v, want 1", aliceTags)
+	}
+
+	loginApp(t, app, "bob")
+	if got, _ := app.ListTags(); len(got) != 0 {
+		t.Fatalf("bob ListTags = %v, want rỗng (tag của alice không lọt sang)", got)
+	}
+	if err := app.DeleteTag(aliceTags[0].ID); err == nil {
+		t.Fatal("bob xóa được tag của alice — thiếu kiểm tra workspace")
+	}
+
+	// Bob tạo tag CÙNG TÊN → phải là tag riêng, không dùng chung hàng với alice.
+	if err := app.SaveTask(TaskDTO{Title: "task bob", Status: "Todo",
+		Tags: []string{"Chỉ của alice"}}); err != nil {
+		t.Fatalf("tạo task bob: %v", err)
+	}
+	bobTags, _ := app.ListTags()
+	if len(bobTags) != 1 {
+		t.Fatalf("bob ListTags = %v, want 1", bobTags)
+	}
+	if bobTags[0].ID == aliceTags[0].ID {
+		t.Fatal("bob dùng chung hàng tag với alice — uniqueIndex thiếu workspace_id")
+	}
+}
+
+// Xóa tag không ghi activity nào, nên nếu tag không nằm trong dấu vân tay đồng
+// bộ thì client khác sẽ tiếp tục hiện tag đã bị xóa. Test khóa hành vi đó lại.
+func TestTagChangeMovesWorkspaceFingerprint(t *testing.T) {
+	app := testApp(t)
+	loginApp(t, app, "alice")
+	if err := app.SaveTask(TaskDTO{Title: "task", Status: "Todo",
+		Tags: []string{"Hạ tầng"}}); err != nil {
+		t.Fatalf("tạo task: %v", err)
+	}
+	tags, _ := app.ListTags()
+	if len(tags) != 1 {
+		t.Fatalf("ListTags = %v, want 1", tags)
+	}
+
+	before, err := app.workspaceFingerprint(app.wsID, app.userID)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	if err := app.DeleteTag(tags[0].ID); err != nil {
+		t.Fatalf("xóa tag: %v", err)
+	}
+	after, err := app.workspaceFingerprint(app.wsID, app.userID)
+	if err != nil {
+		t.Fatalf("fingerprint sau: %v", err)
+	}
+	if before == after {
+		t.Fatalf("fingerprint không đổi sau khi xóa tag (%s) — client khác sẽ không refresh", after)
+	}
+}
+
+// CreateTag tao tag san trong tu vung workspace ma khong gan vao task nao.
+// Diem quan trong: idempotent — goi lai voi ten da co thi tra tag cu kem
+// created=false chu khong loi, nen khong bao gio tao duoc hai tag trung nghia.
+func TestCreateTag(t *testing.T) {
+	app := testApp(t)
+	loginApp(t, app, "alice")
+
+	res, err := app.CreateTag("  Hạ   tầng  ")
+	if err != nil {
+		t.Fatalf("tạo tag: %v", err)
+	}
+	if !res.Created {
+		t.Fatal("created = false ở lần tạo đầu tiên")
+	}
+	if res.Tag.Name != "Hạ tầng" {
+		t.Fatalf("Tag.Name = %q, want \"Hạ tầng\" (khoảng trắng thừa phải được gộp)", res.Tag.Name)
+	}
+	if res.Tag.ID == 0 {
+		t.Fatal("Tag.ID = 0")
+	}
+
+	// Tên trùng (khác chữ hoa/thường) -> tra ve tag cu, KHONG tao tag thu hai.
+	again, err := app.CreateTag("HẠ TẦNG")
+	if err != nil {
+		t.Fatalf("tạo lại: %v", err)
+	}
+	if again.Created {
+		t.Fatal("created = true khi tên đã tồn tại — sẽ sinh tag trùng nghĩa")
+	}
+	if again.Tag.ID != res.Tag.ID {
+		t.Fatalf("ID = %d, want %d (phải là cùng một tag)", again.Tag.ID, res.Tag.ID)
+	}
+	if tags, _ := app.ListTags(); len(tags) != 1 {
+		t.Fatalf("ListTags = %v, want đúng 1 tag", tags)
+	}
+
+	// Ten rong / qua dai bi tu choi.
+	if _, err := app.CreateTag("   "); err == nil {
+		t.Fatal("tạo được tag tên rỗng")
+	}
+	if _, err := app.CreateTag(strings.Repeat("x", 41)); err == nil ||
+		!strings.Contains(err.Error(), "quá dài") {
+		t.Fatalf("muốn lỗi tên quá dài, nhận: %v", err)
+	}
+
+	// Tag tao san dung duoc ngay khi luu task, va KHONG sinh tag moi.
+	if err := app.SaveTask(TaskDTO{Title: "task", Status: "Todo",
+		Tags: []string{"hạ tầng"}}); err != nil {
+		t.Fatalf("lưu task với tag đã tạo sẵn: %v", err)
+	}
+	tags, _ := app.ListTags()
+	if len(tags) != 1 || tags[0].ID != res.Tag.ID {
+		t.Fatalf("ListTags = %v, want vẫn đúng tag id %d", tags, res.Tag.ID)
+	}
+
+	// Tag la tu vung rieng cua workspace: bob khong thay tag cua alice.
+	loginApp(t, app, "bob")
+	if got, _ := app.ListTags(); len(got) != 0 {
+		t.Fatalf("bob ListTags = %v, want rỗng", got)
+	}
+	bob, err := app.CreateTag("Hạ tầng")
+	if err != nil {
+		t.Fatalf("bob tạo tag: %v", err)
+	}
+	if !bob.Created || bob.Tag.ID == res.Tag.ID {
+		t.Fatalf("bob phải tạo được tag RIÊNG cùng tên (created=%v, id=%d vs alice %d)",
+			bob.Created, bob.Tag.ID, res.Tag.ID)
+	}
+}
+
+// Trang MCP từng hardcode danh sách công cụ nên bị lệch (thiếu list_tags).
+// Test khóa lại: danh sách hiện ra phải lấy từ chính bộ công cụ server dùng.
+func TestMCPToolsMatchServerTools(t *testing.T) {
+	app := testApp(t)
+
+	real := app.mcpTools()
+	shown := app.MCPTools()
+	if len(shown) != len(real) {
+		t.Fatalf("MCPTools trả %d công cụ, server có %d — trang MCP sẽ liệt kê thiếu",
+			len(shown), len(real))
+	}
+	byName := map[string]string{}
+	for _, s := range shown {
+		byName[s.Name] = s.Description
+	}
+	for _, r := range real {
+		desc, ok := byName[r.Name]
+		if !ok {
+			t.Errorf("công cụ %q có ở server nhưng không có trong MCPTools", r.Name)
+			continue
+		}
+		if desc != r.Description {
+			t.Errorf("công cụ %q: mô tả lệch với server", r.Name)
+		}
+	}
+	for _, want := range []string{"list_tags", "create_tag"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("thiếu công cụ %q", want)
+		}
+	}
+}
+
+// seedTaskDates chèn task trực tiếp qua GORM để đặt được ngày trong quá khứ:
+// SaveTask chặn startDate trước ngày tạo task, nên không dựng được dữ liệu lịch
+// sử qua đường binding.
+func seedTaskDates(t *testing.T, db *gorm.DB, wsID uint, title, created, start, due, done string) models.Task {
+	t.Helper()
+	day := func(s string) *time.Time {
+		if s == "" {
+			return nil
+		}
+		v, err := time.ParseInLocation(dateLayout, s, time.Local)
+		if err != nil {
+			t.Fatalf("ngay %q: %v", s, err)
+		}
+		return &v
+	}
+	task := models.Task{
+		WorkspaceID: wsID, Title: title, Type: models.TypePlan, Status: models.StatusTodo,
+		StartDate: day(start), DueDate: day(due), DoneDate: day(done),
+	}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatalf("tao task %q: %v", title, err)
+	}
+	// CreatedAt do GORM tự set = now; ghi đè bằng Update để mô phỏng dữ liệu cũ
+	// (created_at mang cả giờ-phút, khác các cột ngày luôn 00:00).
+	if created != "" {
+		if err := db.Model(&task).UpdateColumn("created_at",
+			day(created).Add(15*time.Hour)).Error; err != nil {
+			t.Fatalf("dat created_at cho %q: %v", title, err)
+		}
+	}
+	return task
+}
+
+// TestListTasksDateFilterSQL khóa ngữ nghĩa bộ lọc kỳ của list_tasks, và khóa
+// việc nó chạy bằng SQL: gọi qua đúng Handler của tool nên nếu điều kiện không
+// xuống được WHERE thì kết quả sẽ lệch.
+func TestListTasksDateFilterSQL(t *testing.T) {
+	app, db := testAppDB(t)
+	loginApp(t, app, "filteruser")
+	wsID, err := app.requireWorkspace()
+	if err != nil {
+		t.Fatalf("requireWorkspace: %v", err)
+	}
+
+	//                                     title          created       start         due           done
+	t1 := seedTaskDates(t, db, wsID, "gac ky", "2026-06-30", "2026-06-30", "2026-06-30", "2026-07-03")
+	t2 := seedTaskDates(t, db, wsID, "trong t7", "2026-07-10", "2026-07-10", "2026-07-20", "2026-07-15")
+	t3 := seedTaskDates(t, db, wsID, "trong t6", "2026-06-01", "2026-06-01", "", "2026-06-05")
+	t4 := seedTaskDates(t, db, wsID, "chua bat dau", "2026-07-01", "", "", "")
+
+	var handler func(json.RawMessage) (any, error)
+	for _, tool := range app.mcpTools() {
+		if tool.Name == "list_tasks" {
+			handler = tool.Handler
+		}
+	}
+	if handler == nil {
+		t.Fatal("khong tim thay tool list_tasks")
+	}
+	call := func(t *testing.T, argsJSON string) []uint {
+		t.Helper()
+		var raw json.RawMessage
+		if argsJSON != "" {
+			raw = json.RawMessage(argsJSON)
+		}
+		res, err := handler(raw)
+		if err != nil {
+			t.Fatalf("list_tasks %s: %v", argsJSON, err)
+		}
+		got, ok := res.([]TaskDTO)
+		if !ok {
+			t.Fatalf("list_tasks phai tra []TaskDTO (pi_fetch.py doc do dai mang), duoc %T", res)
+		}
+		ids := make([]uint, len(got))
+		for i, d := range got {
+			ids[i] = d.ID
+		}
+		return ids
+	}
+	sameSet := func(got, want []uint) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		seen := map[uint]bool{}
+		for _, id := range got {
+			seen[id] = true
+		}
+		for _, id := range want {
+			if !seen[id] {
+				return false
+			}
+		}
+		return true
+	}
+
+	cases := []struct {
+		name string
+		args string
+		want []uint
+	}{
+		{"all=true tra toan bo", `{"all":true}`, []uint{t1.ID, t2.ID, t3.ID, t4.ID}},
+		// touched = start HOAC done trong ky: t1 bat dau 30/06 va xong 03/07 nen
+		// thuoc CA hai thang — day la ca ma loc theo startDate don thuan bo sot.
+		{"thang 6 touched", `{"month":"2026-06"}`, []uint{t1.ID, t3.ID}},
+		{"thang 7 touched", `{"month":"2026-07"}`, []uint{t1.ID, t2.ID}},
+		{"thang 6 theo doneDate", `{"month":"2026-06","dateField":"doneDate"}`, []uint{t3.ID}},
+		{"thang 6 theo startDate", `{"month":"2026-06","dateField":"startDate"}`, []uint{t1.ID, t3.ID}},
+		{"thang 6 theo dueDate", `{"month":"2026-06","dateField":"dueDate"}`, []uint{t1.ID}},
+		// created_at co gio-phut (15:00): can tren nua mo moi bat duoc ngay cuoi ky.
+		{"thang 6 theo createdDate", `{"month":"2026-06","dateField":"createdDate"}`, []uint{t1.ID, t3.ID}},
+		{"thang 7 theo createdDate", `{"month":"2026-07","dateField":"createdDate"}`, []uint{t2.ID, t4.ID}},
+		{"ngay cuoi ky theo createdDate", `{"from":"2026-06-30","to":"2026-06-30","dateField":"createdDate"}`, []uint{t1.ID}},
+		{"khoang bao gom ca hai dau", `{"from":"2026-06-30","to":"2026-07-03"}`, []uint{t1.ID}},
+		{"chi co from", `{"from":"2026-07-01"}`, []uint{t1.ID, t2.ID}},
+		{"chi co to", `{"to":"2026-06-30"}`, []uint{t1.ID, t3.ID}},
+		{"ky rong khong khop task nao", `{"month":"2026-05"}`, []uint{}},
+	}
+	for _, c := range cases {
+		if got := call(t, c.args); !sameSet(got, c.want) {
+			t.Errorf("%s: duoc %v, muon %v", c.name, got, c.want)
+		}
+	}
+
+	// Tham số sai phải bật lỗi tới client, không im lặng trả toàn bộ task.
+	bad := []struct{ name, args string }{
+		{"khong tham so nao", ``},
+		{"arguments rong {}", `{}`},
+		{"chi co dateField, khong co khoang", `{"dateField":"doneDate"}`},
+		{"all=true kem month", `{"all":true,"month":"2026-06"}`},
+		{"all=true kem from", `{"all":true,"from":"2026-06-01"}`},
+		{"month sai dinh dang", `{"month":"06-2026"}`},
+		{"month lan voi from", `{"month":"2026-06","from":"2026-06-01"}`},
+		{"from sai dinh dang", `{"from":"30/06/2026"}`},
+		{"to sai dinh dang", `{"to":"2026-13-01"}`},
+		{"from sau to", `{"from":"2026-07-01","to":"2026-06-01"}`},
+		{"dateField khong hop le", `{"month":"2026-06","dateField":"blockedDays"}`},
+	}
+	for _, c := range bad {
+		if _, err := handler(json.RawMessage(c.args)); err == nil {
+			t.Errorf("%s: mong doi loi nhung khong co", c.name)
+		}
+	}
+}
+
+// TestMCPDateFieldsAllAccepted khoa hai ban danh sach "dateField hop le" vao nhau:
+// enum quang cao ra InputSchema (mcpDateFields) va switch whitelist trong resolve().
+// Hai cho nay dong bo bang TAY nen da tung lech that — `overlap` co trong enum va
+// duoc mo ta ky trong description cua tool, nhung resolve() lai tu choi.
+//
+// Kieu lech nay dac biet kho thay tu phia client: thong bao loi in chinh
+// mcpDateFields ra nen no tu mau thuan — `dateField "overlap" khong hop le (chon:
+// ..., overlap)`. Client la LLM doc schema roi truyen dung thu schema moi, bi chan,
+// rat de retry y nguyen gia tri cu vi loi vua bao gia tri do duoc phep.
+func TestMCPDateFieldsAllAccepted(t *testing.T) {
+	for _, field := range mcpDateFields {
+		got, err := (mcpTaskFilter{Month: "2026-06", DateField: field}).resolve()
+		if err != nil {
+			t.Errorf("dateField %q co trong enum cua InputSchema nhung resolve() tu choi: %v",
+				field, err)
+			continue
+		}
+		if string(got.Field) != field {
+			t.Errorf("dateField %q: resolve() tra ve Field=%q", field, got.Field)
+		}
+	}
+
+	// Khong co phep kiem nguoc nay thi vong lap tren van xanh neu ai do "sua" bang
+	// cach cho resolve() nhan tat ca — dung la het lech, nhung mat luon validate.
+	if _, err := (mcpTaskFilter{Month: "2026-06", DateField: "blockedDays"}).resolve(); err == nil {
+		t.Error("dateField la khong co trong enum van duoc chap nhan")
+	}
+
+	// Bo trong khong phai loi: phan lon caller khong quan tam field nao.
+	got, err := (mcpTaskFilter{Month: "2026-06"}).resolve()
+	if err != nil {
+		t.Fatalf("dateField rong phai duoc chap nhan: %v", err)
+	}
+	if got.Field != service.TaskDateTouched {
+		t.Errorf("dateField rong phai mac dinh %q, duoc %q", service.TaskDateTouched, got.Field)
+	}
+}
+
+// TestListTasksOverlapField khoa ngu nghia dateField="overlap" tu dau client goi
+// vao — day la dang loc DUY NHAT tra loi duoc cau "viec nao con song trong ky".
+//
+// Doi chieu voi touched (mac dinh) tren cung bo du lieu la co y: hai truong hop
+// touched bo sot — task chay dai chua xong, va task chua co ngay bat dau — chinh
+// la ly do overlap ton tai. Thieu no, client chi con duong `all=true`, tuc keo ca
+// workspace ve, dung thu ma rang buoc bat buoc-co-khoang-thoi-gian sinh ra de chan.
+func TestListTasksOverlapField(t *testing.T) {
+	app, db := testAppDB(t)
+	loginApp(t, app, "overlapuser")
+	wsID, err := app.requireWorkspace()
+	if err != nil {
+		t.Fatalf("requireWorkspace: %v", err)
+	}
+
+	//                                       title             created       start         due done
+	dangLam := seedTaskDates(t, db, wsID, "chay dai tu t5", "2026-05-20", "2026-05-20", "", "")
+	xongT5 := seedTaskDates(t, db, wsID, "xong trong t5", "2026-05-01", "2026-05-01", "", "2026-05-10")
+	chuaBatDau := seedTaskDates(t, db, wsID, "chua bat dau", "2026-07-01", "", "", "")
+	tronT7 := seedTaskDates(t, db, wsID, "tron trong t7", "2026-07-10", "2026-07-10", "", "2026-07-15")
+
+	var handler func(json.RawMessage) (any, error)
+	for _, tool := range app.mcpTools() {
+		if tool.Name == "list_tasks" {
+			handler = tool.Handler
+		}
+	}
+	if handler == nil {
+		t.Fatal("khong tim thay tool list_tasks")
+	}
+	call := func(t *testing.T, argsJSON string) []uint {
+		t.Helper()
+		res, err := handler(json.RawMessage(argsJSON))
+		if err != nil {
+			t.Fatalf("list_tasks %s: %v", argsJSON, err)
+		}
+		got, ok := res.([]TaskDTO)
+		if !ok {
+			t.Fatalf("list_tasks phai tra []TaskDTO, duoc %T", res)
+		}
+		ids := make([]uint, len(got))
+		for i, d := range got {
+			ids[i] = d.ID
+		}
+		return ids
+	}
+	sameSet := func(got, want []uint) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		seen := map[uint]bool{}
+		for _, id := range got {
+			seen[id] = true
+		}
+		for _, id := range want {
+			if !seen[id] {
+				return false
+			}
+		}
+		return true
+	}
+
+	cases := []struct {
+		name string
+		args string
+		want []uint
+	}{
+		// Thang 7: task chay dai khong bat dau cung khong ket thuc trong thang nay
+		// nen touched bo qua, du no dang la viec dang lam do.
+		{"t7 touched", `{"month":"2026-07"}`, []uint{tronT7.ID}},
+		{"t7 overlap", `{"month":"2026-07","dateField":"overlap"}`,
+			[]uint{dangLam.ID, chuaBatDau.ID, tronT7.ID}},
+
+		// Thang 6: khong task nao cham vao thang 6, nhung viec chay dai van dang
+		// treo qua thang — do moi la thu can thay khi hoi "thang 6 dang co gi".
+		{"t6 touched", `{"month":"2026-06"}`, []uint{}},
+		{"t6 overlap", `{"month":"2026-06","dateField":"overlap"}`,
+			[]uint{dangLam.ID, chuaBatDau.ID}},
+
+		// xongT5 vang mat o ca hai ky tren: overlap khong phai "lay tuot" — task da
+		// dong truoc ky thi bi loai dung nhu mong doi.
+		{"t5 overlap van gom task da xong trong ky", `{"month":"2026-05","dateField":"overlap"}`,
+			[]uint{dangLam.ID, xongT5.ID, chuaBatDau.ID}},
+
+		// Khoang ngay tu do, khong chi month.
+		{"khoang ngay overlap", `{"from":"2026-06-10","to":"2026-06-20","dateField":"overlap"}`,
+			[]uint{dangLam.ID, chuaBatDau.ID}},
+	}
+	for _, c := range cases {
+		if got := call(t, c.args); !sameSet(got, c.want) {
+			t.Errorf("%s: duoc %v, muon %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestListTasksFilterKeepsJoinedData canh giu viec thu hep ba query di kem
+// (checklist, phu thuoc, tag) khong lam rong du lieu cua task con lai sau khi loc.
+func TestListTasksFilterKeepsJoinedData(t *testing.T) {
+	app, db := testAppDB(t)
+	loginApp(t, app, "joinuser")
+	wsID, err := app.requireWorkspace()
+	if err != nil {
+		t.Fatalf("requireWorkspace: %v", err)
+	}
+
+	base := seedTaskDates(t, db, wsID, "co checklist va tag", "2026-06-10", "2026-06-10", "", "2026-06-12")
+	dep := seedTaskDates(t, db, wsID, "task phu thuoc truoc", "2026-06-05", "2026-06-05", "", "2026-06-06")
+	other := seedTaskDates(t, db, wsID, "ngoai ky", "2026-08-01", "2026-08-01", "", "")
+
+	if err := app.AddTodo(base.ID, "viec 1"); err != nil {
+		t.Fatalf("add todo: %v", err)
+	}
+	if err := app.AddTodo(base.ID, "viec 2"); err != nil {
+		t.Fatalf("add todo: %v", err)
+	}
+	if err := app.AddTodo(other.ID, "viec cua task ngoai ky"); err != nil {
+		t.Fatalf("add todo: %v", err)
+	}
+	ids, err := app.tags.EnsureByNames(wsID, []string{"BizChat"})
+	if err != nil {
+		t.Fatalf("ensure tag: %v", err)
+	}
+	if err := app.tags.SetForTask(wsID, base.ID, ids); err != nil {
+		t.Fatalf("set tag: %v", err)
+	}
+	if err := app.dependencies.SetForTask(wsID, base.ID, []uint{dep.ID}); err != nil {
+		t.Fatalf("set dependency: %v", err)
+	}
+
+	got, err := app.listTasks(service.TaskDateFilter{
+		Field: service.TaskDateTouched,
+		From:  mustDay(t, "2026-06-01"), To: mustDay(t, "2026-06-30"),
+	})
+	if err != nil {
+		t.Fatalf("listTasks co loc: %v", err)
+	}
+	var found *TaskDTO
+	for i := range got {
+		if got[i].ID == base.ID {
+			found = &got[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("task trong ky bi loc mat, duoc %d task", len(got))
+	}
+	if found.TodoTotal != 2 {
+		t.Errorf("TodoTotal = %d, muon 2 — CountsForTasks khong dem dung", found.TodoTotal)
+	}
+	if len(found.Tags) != 1 || found.Tags[0] != "BizChat" {
+		t.Errorf("Tags = %v, muon [BizChat] — NamesByTaskIDs bi thu hep qua tay", found.Tags)
+	}
+	if len(found.DependsOn) != 1 || found.DependsOn[0] != dep.ID {
+		t.Errorf("DependsOn = %v, muon [%d]", found.DependsOn, dep.ID)
+	}
+}
+
+func mustDay(t *testing.T, s string) *time.Time {
+	t.Helper()
+	v, err := time.ParseInLocation(dateLayout, s, time.Local)
+	if err != nil {
+		t.Fatalf("ngay %q: %v", s, err)
+	}
+	return &v
+}
+
+// TestListTasksInMonthScopesQuery khóa hành vi của binding mà trang Tasks dùng:
+// chỉ trả task liên quan tháng đang xem, nhưng KHÔNG bỏ hai nhóm mà UI luôn hiện
+// (task chưa xong bắt đầu từ trước, task chưa có ngày bắt đầu).
+func TestListTasksInMonthScopesQuery(t *testing.T) {
+	app, db := testAppDB(t)
+	loginApp(t, app, "monthuser")
+	wsID, err := app.requireWorkspace()
+	if err != nil {
+		t.Fatalf("requireWorkspace: %v", err)
+	}
+
+	//                              title              created       start         due  done
+	inJul := seedTaskDates(t, db, wsID, "trong t7", "2026-07-05", "2026-07-05", "", "2026-07-08")
+	openOld := seedTaskDates(t, db, wsID, "con mo tu t5", "2026-05-01", "2026-05-01", "", "")
+	noStart := seedTaskDates(t, db, wsID, "chua bat dau", "2026-07-01", "", "", "")
+	oldDone := seedTaskDates(t, db, wsID, "xong tu t5", "2026-05-01", "2026-05-01", "", "2026-05-09")
+
+	got, err := app.ListTasksInMonth("2026-07")
+	if err != nil {
+		t.Fatalf("ListTasksInMonth: %v", err)
+	}
+	in := map[uint]bool{}
+	for _, d := range got {
+		in[d.ID] = true
+	}
+	for _, want := range []struct {
+		id   uint
+		why  string
+		name string
+	}{
+		{inJul.ID, "task cua thang", "trong t7"},
+		{openOld.ID, "task chua xong bat dau tu truoc — UI van ve thanh keo dai", "con mo tu t5"},
+		{noStart.ID, "task chua co ngay bat dau — UI hien o moi thang", "chua bat dau"},
+	} {
+		if !in[want.id] {
+			t.Errorf("thieu task %q (#%d): %s", want.name, want.id, want.why)
+		}
+	}
+	if in[oldDone.ID] {
+		t.Error("task da xong tu thang 5 khong duoc lot vao thang 7 — bo loc khong co tac dung")
+	}
+
+	if _, err := app.ListTasksInMonth("07-2026"); err == nil {
+		t.Error("thang sai dinh dang phai bao loi")
+	}
+}
+
+// TestGetTaskOutsideMonth: mở task từ thông báo phải được, kể cả khi task không
+// nằm trong tháng trang Tasks đang nạp — nếu không, UI se bao sai "khong tim thay".
+func TestGetTaskOutsideMonth(t *testing.T) {
+	app, db := testAppDB(t)
+	loginApp(t, app, "getuser")
+	wsID, err := app.requireWorkspace()
+	if err != nil {
+		t.Fatalf("requireWorkspace: %v", err)
+	}
+	old := seedTaskDates(t, db, wsID, "task thang 5", "2026-05-01", "2026-05-01", "", "2026-05-09")
+	if err := app.AddTodo(old.ID, "viec 1"); err != nil {
+		t.Fatalf("add todo: %v", err)
+	}
+	ids, err := app.tags.EnsureByNames(wsID, []string{"BizChat"})
+	if err != nil {
+		t.Fatalf("ensure tag: %v", err)
+	}
+	if err := app.tags.SetForTask(wsID, old.ID, ids); err != nil {
+		t.Fatalf("set tag: %v", err)
+	}
+
+	if got, _ := app.ListTasksInMonth("2026-07"); len(got) != 0 {
+		t.Fatalf("tien de sai: thang 7 phai rong, duoc %d task", len(got))
+	}
+	dto, err := app.GetTask(old.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if dto.Title != "task thang 5" || dto.TodoTotal != 1 || len(dto.Tags) != 1 {
+		t.Errorf("GetTask tra thieu du lieu: title=%q todoTotal=%d tags=%v",
+			dto.Title, dto.TodoTotal, dto.Tags)
+	}
+
+	// Task của workspace khác không được đọc được qua GetTask.
+	other := models.Task{WorkspaceID: wsID + 999, Title: "ws khac", Type: models.TypePlan}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("tao task ws khac: %v", err)
+	}
+	if _, err := app.GetTask(other.ID); err == nil {
+		t.Error("GetTask phai chan task ngoai workspace hien tai")
+	}
+}
+
+// TestListTaskRefsCoversWholeWorkspace: picker chon task trong TaskModal phai
+// thay duoc ca task ngoai thang dang xem.
+func TestListTaskRefsCoversWholeWorkspace(t *testing.T) {
+	app, db := testAppDB(t)
+	loginApp(t, app, "refuser")
+	wsID, err := app.requireWorkspace()
+	if err != nil {
+		t.Fatalf("requireWorkspace: %v", err)
+	}
+	oldT := seedTaskDates(t, db, wsID, "task thang 3", "2026-03-01", "2026-03-01", "", "2026-03-05")
+	newT := seedTaskDates(t, db, wsID, "task thang 7", "2026-07-01", "2026-07-01", "", "")
+
+	refs, err := app.ListTaskRefs()
+	if err != nil {
+		t.Fatalf("ListTaskRefs: %v", err)
+	}
+	byID := map[uint]string{}
+	for _, r := range refs {
+		byID[r.ID] = r.Title
+	}
+	if byID[oldT.ID] != "task thang 3" {
+		t.Errorf("thieu task ngoai thang trong danh sach picker: %v", byID)
+	}
+	if byID[newT.ID] != "task thang 7" {
+		t.Errorf("thieu task trong thang trong danh sach picker: %v", byID)
+	}
+}
+
+// TestNotifIntervalByDriver: trên Postgres, thông báo tới qua LISTEN/NOTIFY nên
+// poll chỉ là lưới an toàn và phải giãn ra — quét 10s như sqlite là đốt query
+// định kỳ cho việc đã có push lo.
+func TestNotifIntervalByDriver(t *testing.T) {
+	app := testApp(t) // sqlite
+	if got := app.notifInterval(); got != notifPollInterval {
+		t.Errorf("sqlite: nhip poll = %v, muon %v (khong co push nao khac)", got, notifPollInterval)
+	}
+	if app.usePgNotify() {
+		t.Fatal("sqlite khong duoc dung duong pg notify")
+	}
+
+	// Dialector Postgres KHÔNG cần kết nối thật: usePgNotify chỉ đọc tên driver.
+	app.db = &gorm.DB{Config: &gorm.Config{
+		Dialector: gormpg.Open("host=localhost user=x dbname=x"),
+	}}
+	if !app.usePgNotify() {
+		t.Fatal("dialector postgres phai duoc nhan la pg notify")
+	}
+	if got := app.notifInterval(); got != notifPollIntervalPg {
+		t.Errorf("postgres: nhip poll = %v, muon %v", got, notifPollIntervalPg)
+	}
+	if notifPollIntervalPg <= notifPollInterval {
+		t.Errorf("nhip postgres (%v) phai THUA hon sqlite (%v) — neu khong thi NOTIFY khong tiet kiem duoc query nao",
+			notifPollIntervalPg, notifPollInterval)
 	}
 }

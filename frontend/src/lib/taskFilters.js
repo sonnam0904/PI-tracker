@@ -4,7 +4,7 @@
 // mọi thay đổi shape chỉ cần sửa ở đây.
 import {
   FIELD_BY_KEY, filterFields, sortFields, groupFields, opsFor,
-  matchesCondition, sortValue, sortBlank, groupKey, groupLabel,
+  matchesCondition, sortValue, sortBlank, groupBuckets,
 } from './taskFields'
 
 export function emptyConfig() {
@@ -84,7 +84,11 @@ export function sameConfig(a, b) {
 
 export function matchesConfig(t, cfg) {
   const needle = (cfg.q || '').trim().toLowerCase()
-  if (needle && !((t.title || '') + ' ' + (t.description || '')).toLowerCase().includes(needle)) return false
+  // Tìm nhanh quét cả tên tag — gõ tên tag là ra ngay các task thuộc tag đó.
+  if (needle) {
+    const hay = [t.title || '', t.description || '', ...(t.tags || [])].join(' ').toLowerCase()
+    if (!hay.includes(needle)) return false
+  }
   const conds = (cfg.conditions || []).filter(c => c.field && c.op)
   if (!conds.length) return true
   const res = conds.map(c => matchesCondition(t, c))
@@ -132,11 +136,14 @@ export function buildGroups(tasks, groups, ctx) {
     const g = active[depth]
     const buckets = new Map()
     for (const t of list) {
-      const k = groupKey(t, g.field)
-      if (!buckets.has(k)) {
-        buckets.set(k, { key: k, label: groupLabel(t, g.field, ctx), sortVal: sortValue(t, g.field, ctx), tasks: [] })
+      // groupBuckets trả về NHIỀU nhóm cho field nhiều giá trị (tags): task gắn
+      // n tag được đếm vào cả n nhóm, nên tổng count các nhóm > số task.
+      for (const b of groupBuckets(t, g.field, ctx)) {
+        if (!buckets.has(b.key)) {
+          buckets.set(b.key, { key: b.key, label: b.label, sortVal: b.sortVal, tasks: [] })
+        }
+        buckets.get(b.key).tasks.push(t)
       }
-      buckets.get(k).tasks.push(t)
     }
     const arr = [...buckets.values()].sort((a, b) => groupCmp(a, b, g.dir))
     for (const b of arr) {

@@ -52,6 +52,7 @@ type App struct {
 	notifications *service.NotificationService
 	savedViews    *service.SavedViewService
 	dependencies  *service.DependencyService
+	tags          *service.TagService
 
 	// mcp — MCP server localhost, bật/tắt từ trang "MCP". Tồn tại suốt vòng đời
 	// app; các công cụ của nó thao tác dưới session đang đăng nhập bên dưới.
@@ -130,6 +131,7 @@ func (a *App) attachDB(db *gorm.DB) {
 	a.notifications.SetOnCreate(a.notifyNotifBroadcast)
 	a.savedViews = service.NewSavedViewService(db)
 	a.dependencies = service.NewDependencyService(db)
+	a.tags = service.NewTagService(db)
 }
 
 // DBStatusDTO cho frontend biết trạng thái kết nối DB. Tách hai khái niệm:
@@ -294,9 +296,21 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
-// notifPollInterval — nhịp quét thông báo mới trong DB. Thông báo do instance
-// của user khác ghi vào DB chung, nên phải poll chứ không có push.
+// notifPollInterval — nhịp quét thông báo mới trong DB cho sqlite/mysql. Thông
+// báo do instance của user khác ghi vào DB chung, mà hai driver này không có
+// kênh push nào, nên chỉ còn cách poll.
 const notifPollInterval = 10 * time.Second
+
+// notifPollIntervalPg — nhịp quét trên Postgres. Ở đây NOTIFY mới là đường
+// chính (SetOnCreate → notifyNotifBroadcast → checkNewNotifications), nên poll
+// chỉ còn là LƯỚI AN TOÀN, không phải cơ chế phát hiện. Vì vậy giãn ra hẳn:
+// quét 10s như sqlite là đốt query định kỳ cho việc đã có push lo.
+//
+// Vẫn giữ chứ không bỏ hẳn, vì hai đường vẫn lọt qua NOTIFY:
+//   - nhắc hạn chót đi qua CreateIfAbsent, nơi CỐ Ý không phát NOTIFY (xem
+//     notification_service.go) — client khác của cùng user chỉ thấy nhờ poll;
+//   - lúc connection LISTEN rớt, NOTIFY phát ra trong khoảng đó mất luôn.
+const notifPollIntervalPg = 60 * time.Second
 
 // primeNotifBaseline chụp MỐC thông báo (ID lớn nhất hiện tại của user) NGAY khi
 // đăng nhập, để nhịp NOTIFY/poll đầu tiên so với mốc này và báo được thông báo
@@ -326,10 +340,20 @@ func (a *App) primeNotifBaseline() {
 	a.notifUserID, a.notifLastID = uid, maxID
 }
 
+// notifInterval chọn nhịp poll thông báo theo driver: Postgres đã có NOTIFY nên
+// poll chỉ là lưới an toàn và được giãn ra; sqlite/mysql thì poll là đường duy
+// nhất nên phải nhanh.
+func (a *App) notifInterval() time.Duration {
+	if a.usePgNotify() {
+		return notifPollIntervalPg
+	}
+	return notifPollInterval
+}
+
 // watchNotifications chạy nền suốt vòng đời app: phát hiện thông báo mới của
 // user đang đăng nhập và đẩy ra Hệ điều hành, kể cả khi cửa sổ đang ở nền.
 func (a *App) watchNotifications(ctx context.Context) {
-	t := time.NewTicker(notifPollInterval)
+	t := time.NewTicker(a.notifInterval())
 	defer t.Stop()
 	for {
 		select {
@@ -465,8 +489,9 @@ func (a *App) checkWorkspaceData() {
 // mà client hiện tại cần thấy: COUNT + MAX(id) của tasks (bắt tạo/xóa) và
 // MAX(activities.id) — activity là sổ ghi chung nên bắt được sửa task, toggle/
 // thêm/xóa checklist, bình luận, đổi trạng thái; cộng dấu vân tay saved-view của
-// (workspace, user) để bắt tạo/xóa/đổi tên/sửa bộ lọc/đổi thứ tự tab. (Sửa CHỈ
-// phụ thuộc — hiếm — có thể không ghi activity, sẽ đồng bộ ở thay đổi kế tiếp.)
+// (workspace, user) để bắt tạo/xóa/đổi tên/sửa bộ lọc/đổi thứ tự tab; cộng
+// COUNT+MAX(id) của tag vì XÓA tag không ghi activity nào. (Sửa CHỈ phụ thuộc —
+// hiếm — có thể không ghi activity, sẽ đồng bộ ở thay đổi kế tiếp.)
 func (a *App) workspaceFingerprint(wsID, userID uint) (string, error) {
 	n, maxID, err := a.tasks.Fingerprint(wsID)
 	if err != nil {
@@ -480,7 +505,11 @@ func (a *App) workspaceFingerprint(wsID, userID uint) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%d:%d:%d:%s", n, maxID, actMax, viewsFP), nil
+	tagN, tagMax, err := a.tags.Fingerprint(wsID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d:%d:%d:%s:%d:%d", n, maxID, actMax, viewsFP, tagN, tagMax), nil
 }
 
 // dueSoonWindow — nhắc trước hạn chót bao lâu; dueCheckInterval — nhịp quét.
@@ -1024,6 +1053,10 @@ type TaskDTO struct {
 	// DependsOn: các task phải hoàn thành trước task này (finish-to-start).
 	// Đổ khi ListTasks để vẽ mũi tên Gantt; nhận lại khi SaveTask để lưu.
 	DependsOn []uint `json:"dependsOn"`
+	// Tags: tên các tag phân loại gắn cho task. Đi bằng TÊN (không phải ID) để
+	// frontend chỉ cần gửi chuỗi người dùng gõ — tên chưa có thì backend tự tạo
+	// tag mới, tên đã có thì dùng lại tag cũ (TagService.EnsureByNames).
+	Tags []string `json:"tags"`
 	// Checklist progress (chỉ đổ khi ListTasks, phục vụ badge trên board).
 	TodoTotal int `json:"todoTotal"`
 	TodoDone  int `json:"todoDone"`
@@ -1090,20 +1123,113 @@ func parseDate(s string) (*time.Time, error) {
 	return &t, nil
 }
 
+// ListTasks trả về TOÀN BỘ task của workspace hiện tại, không lọc ngày.
+//
+// Chỉ dùng cho luồng cần trọn workspace (MCP list_tasks không tham số). Trang
+// Tasks KHÔNG dùng hàm này — nó gọi ListTasksInMonth, vì tải cả lịch sử về client
+// sẽ nặng dần theo tuổi của workspace chứ không theo lượng việc đang xem.
 func (a *App) ListTasks() ([]TaskDTO, error) {
+	return a.listTasks(service.TaskDateFilter{})
+}
+
+// monthBounds đổi "YYYY-MM" thành ngày đầu và ngày CUỐI tháng (cả hai đều tính
+// vào kỳ). Dùng chung cho binding của trang Tasks và tham số month của MCP để hai
+// đường không lệch nhau về định nghĩa "một tháng".
+func monthBounds(month string) (from, to time.Time, err error) {
+	start, err := time.ParseInLocation("2006-01", strings.TrimSpace(month), time.Local)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("tháng %q không hợp lệ (định dạng YYYY-MM)", month)
+	}
+	return start, start.AddDate(0, 1, -1), nil
+}
+
+// ListTasksInMonth trả về task cần cho khung tháng của trang Tasks: task có
+// khoảng sống (start → done) giao với tháng, cộng task chưa có ngày bắt đầu.
+//
+// Đây là TẬP BAO của bộ lọc `rows` trong GanttView, cố ý rộng hơn một chút (xem
+// TaskDateFilter.overlapWhere): nhát cắt chính xác — gồm cả phần suy đoán
+// barEnd = start + estimateAiDays — vẫn do client giữ, nên giao diện không đổi.
+//
+// month dạng "YYYY-MM".
+func (a *App) ListTasksInMonth(month string) ([]TaskDTO, error) {
+	from, to, err := monthBounds(month)
+	if err != nil {
+		return nil, err
+	}
+	return a.listTasks(service.TaskDateFilter{
+		Field: service.TaskDateOverlap, From: &from, To: &to,
+	})
+}
+
+// ListTaskRefs trả về id + tiêu đề của MỌI task trong workspace — nguồn cho các
+// combobox chọn task trong TaskModal (phụ thuộc, task gốc sinh bug).
+//
+// Danh sách này phải trọn workspace, không lọc tháng: một task tháng 7 vẫn được
+// phép phụ thuộc vào task tháng 3, và tiêu đề của task đã chọn phải hiện ra được
+// dù nó nằm ngoài tháng đang xem. Bù lại nó chỉ SELECT hai cột, nên nhẹ hơn
+// ListTasks nhiều lần (description mới là phần chiếm chỗ).
+func (a *App) ListTaskRefs() ([]service.TaskRef, error) {
 	wsID, err := a.requireWorkspace()
 	if err != nil {
 		return nil, err
 	}
-	tasks, err := a.tasks.List(wsID)
+	return a.tasks.ListRefs(wsID)
+}
+
+// GetTask trả về một task của workspace hiện tại theo id, kèm checklist/phụ
+// thuộc/tag như trong danh sách.
+//
+// Cần cho việc mở task từ thông báo: từ khi trang Tasks chỉ nạp theo tháng, task
+// được nhắc có thể không nằm trong tháng đang xem — không có hàm này thì UI sẽ
+// báo "không tìm thấy task" cho một task vẫn còn tồn tại.
+func (a *App) GetTask(taskID uint) (TaskDTO, error) {
+	t, _, err := a.taskInWorkspace(taskID)
+	if err != nil {
+		return TaskDTO{}, err
+	}
+	dto := taskToDTO(t)
+	if deps, err := a.dependencies.PredecessorsOf(t.ID); err == nil {
+		dto.DependsOn = deps
+	}
+	// Phải đổ tag vào đây: update_task lấy DTO này làm nền rồi merge, nên thiếu
+	// tag ở nền là update một phần sẽ xóa trắng tag của task.
+	if names, err := a.tags.NamesOf(t.ID); err == nil {
+		dto.Tags = names
+	}
+	if counts, err := a.todos.CountsForTasks([]uint{t.ID}); err == nil {
+		if c, ok := counts[t.ID]; ok {
+			dto.TodoTotal, dto.TodoDone = c[0], c[1]
+		}
+	}
+	return dto, nil
+}
+
+// listTasks là thân dùng chung của ListTasks và nhánh lọc theo kỳ của MCP.
+// Khoảng ngày đi xuống SQL (TaskService.ListFiltered), rồi ba query đi kèm
+// (checklist, phụ thuộc, tag) chỉ hỏi đúng các task vừa lấy được — nếu chúng vẫn
+// gộp theo cả workspace thì việc lọc task ở DB thành vô nghĩa về chi phí.
+func (a *App) listTasks(filter service.TaskDateFilter) ([]TaskDTO, error) {
+	wsID, err := a.requireWorkspace()
 	if err != nil {
 		return nil, err
 	}
-	counts, err := a.todos.Counts()
+	tasks, err := a.tasks.ListFiltered(wsID, filter)
 	if err != nil {
 		return nil, err
 	}
-	deps, err := a.dependencies.DependsOnMap(wsID)
+	ids := make([]uint, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.ID
+	}
+	counts, err := a.todos.CountsForTasks(ids)
+	if err != nil {
+		return nil, err
+	}
+	deps, err := a.dependencies.DependsOnMapForTasks(wsID, ids)
+	if err != nil {
+		return nil, err
+	}
+	tagNames, err := a.tags.NamesByTaskIDs(wsID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -1114,8 +1240,59 @@ func (a *App) ListTasks() ([]TaskDTO, error) {
 			dtos[i].TodoTotal, dtos[i].TodoDone = c[0], c[1]
 		}
 		dtos[i].DependsOn = deps[t.ID]
+		dtos[i].Tags = tagNames[t.ID]
 	}
 	return dtos, nil
+}
+
+// ListTags trả về toàn bộ tag của workspace hiện tại — danh sách để combobox
+// "chọn lại tag cũ đã tạo" đổ vào.
+func (a *App) ListTags() ([]models.Tag, error) {
+	wsID, err := a.requireWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	return a.tags.List(wsID)
+}
+
+// TagResultDTO là kết quả tạo tag. Created cho biết tag vừa được tạo thật, hay
+// tên đã tồn tại nên trả về tag cũ — caller cần phân biệt để không tưởng mình
+// vừa tạo một tag mới trong khi thực ra đang dùng lại tag sẵn có.
+type TagResultDTO struct {
+	Tag     models.Tag `json:"tag"`
+	Created bool       `json:"created"`
+}
+
+// CreateTag tạo tag mới cho workspace hiện tại mà không cần gắn vào task nào.
+// Idempotent: tên đã có (không phân biệt chữ hoa/thường) thì trả về tag cũ với
+// created=false thay vì báo lỗi.
+func (a *App) CreateTag(name string) (TagResultDTO, error) {
+	wsID, err := a.requireWorkspace()
+	if err != nil {
+		return TagResultDTO{}, err
+	}
+	tag, created, err := a.tags.Create(wsID, name)
+	if err != nil {
+		return TagResultDTO{}, err
+	}
+	if created {
+		a.notifyChange(wsID, 0, changeData)
+	}
+	return TagResultDTO{Tag: tag, Created: created}, nil
+}
+
+// DeleteTag xóa một tag khỏi workspace và bỏ nó khỏi mọi task đang gắn — dùng
+// khi tag bị tạo nhầm (gõ sai chính tả) và cần dọn khỏi từ vựng workspace.
+func (a *App) DeleteTag(tagID uint) error {
+	wsID, err := a.requireWorkspace()
+	if err != nil {
+		return err
+	}
+	if err := a.tags.Delete(wsID, tagID); err != nil {
+		return err
+	}
+	a.notifyChange(wsID, 0, changeData)
+	return nil
 }
 
 // taskInWorkspace xác nhận task thuộc workspace hiện tại.
@@ -1288,14 +1465,24 @@ func (a *App) SaveTask(dto TaskDTO) error {
 		}
 	}
 
+	// Tag phân loại: đổi tên → ID (tên mới thì tạo tag mới, tên cũ dùng lại).
+	// Làm TRƯỚC khi lưu task để tên tag sai (quá dài) báo lỗi ngay thay vì lưu
+	// task xong mới báo.
+	tagIDs, err := a.tags.EnsureByNames(wsID, dto.Tags)
+	if err != nil {
+		return err
+	}
+
 	// Lấy bản cũ trước khi lưu để ghi lịch sử thay đổi (và xác nhận quyền).
 	var old *models.Task
+	var oldTags []string
 	if t.ID != 0 {
 		prev, _, err := a.taskInWorkspace(t.ID)
 		if err != nil {
 			return err
 		}
 		old = &prev
+		oldTags, _ = a.tags.NamesOf(t.ID)
 	}
 
 	// Rời trạng thái Blocked → tự cộng thời gian đã nằm ở Blocked (theo lịch
@@ -1327,6 +1514,11 @@ func (a *App) SaveTask(dto TaskDTO) error {
 		return err
 	}
 
+	// Tag lưu sau khi có t.ID (task mới) — cùng lý do như phụ thuộc.
+	if err := a.tags.SetForTask(wsID, t.ID, tagIDs); err != nil {
+		return err
+	}
+
 	names, _ := a.workspaces.MemberNames(wsID)
 	if old == nil {
 		_ = a.activities.Log(wsID, t.ID, a.actorName(), "create", "tạo task")
@@ -1354,6 +1546,15 @@ func (a *App) SaveTask(dto TaskDTO) error {
 	if note := depChangeNote(oldDeps, depIDs); note != "" {
 		_ = a.activities.Log(wsID, t.ID, a.actorName(), "update", note)
 	}
+	// Tag chỉ diff được ở đây (không nằm trên models.Task nên taskChanges không
+	// thấy) — đọc lại tên sau khi lưu để lấy đúng tên tag vừa tạo.
+	if old != nil {
+		if newTags, err := a.tags.NamesOf(t.ID); err == nil {
+			if note := tagChangeNote(oldTags, newTags); note != "" {
+				_ = a.activities.Log(wsID, t.ID, a.actorName(), "update", note)
+			}
+		}
+	}
 	// Đặt/đổi hạn chót có hiệu lực ngay: quét nhắc việc luôn thay vì bắt
 	// người dùng đợi nhịp quét theo giờ (task đã nhắc rồi không nhắc lại).
 	if t.DueDate != nil && t.Status != models.StatusDone {
@@ -1375,6 +1576,7 @@ func (a *App) DeleteTask(id uint) error {
 	_ = a.activities.DeleteForTask(id)
 	_ = a.statuses.DeleteForTask(id)
 	_ = a.dependencies.DeleteForTask(id)
+	_ = a.tags.DeleteForTask(id)
 	a.notifyChange(wsID, 0, changeData)
 	return nil
 }
@@ -1410,6 +1612,39 @@ func depChangeNote(old, new []uint) string {
 		}
 	}
 	return fmt.Sprintf("Phụ thuộc: %s → %s", refs(old), refs(new))
+}
+
+// tagChangeNote trả về dòng lịch sử "Phân loại tag: cũ → mới" khi tập tag thay
+// đổi, hoặc "" nếu không đổi. So sánh không phân biệt thứ tự và chữ hoa/thường
+// vì TagService coi "Hạ tầng" và "hạ tầng" là cùng một tag.
+func tagChangeNote(old, new []string) string {
+	list := func(names []string) string {
+		if len(names) == 0 {
+			return "—"
+		}
+		return strings.Join(service.SortedNames(names), ", ")
+	}
+	norm := func(names []string) map[string]bool {
+		set := make(map[string]bool, len(names))
+		for _, n := range names {
+			set[strings.ToLower(n)] = true
+		}
+		return set
+	}
+	o, n := norm(old), norm(new)
+	if len(o) == len(n) {
+		same := true
+		for k := range n {
+			if !o[k] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return ""
+		}
+	}
+	return fmt.Sprintf("Phân loại tag: %s → %s", list(old), list(new))
 }
 
 // taskChanges liệt kê khác biệt giữa 2 bản task, dạng "Trường: cũ → mới".
@@ -1804,11 +2039,18 @@ func (a *App) ExportReport(month, format, asOf string, assigneeID uint) (string,
 		return "", err
 	}
 
+	// Tag phân loại cho cột "Tag" của phụ lục — nhiều-nhiều nên không nằm trên
+	// models.Task, phải nạp riêng theo workspace.
+	taskTags, err := a.tags.NamesByTask(wsID)
+	if err != nil {
+		return "", err
+	}
+
 	data := report.Data{
 		Month: m, AsOf: now, AssigneeName: assigneeName,
 		Metrics: metrics, Advice: advice,
 		Settings: st, Tasks: tasks, People: names,
-		OriginBugs: originBugs,
+		OriginBugs: originBugs, TaskTags: taskTags,
 	}
 
 	var content []byte

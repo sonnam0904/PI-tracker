@@ -128,6 +128,7 @@ async function drop(status) {
             ☑ {{ t.todoDone }}/{{ t.todoTotal }}
           </span>
           <span v-if="t.aiUsed" class="kb-tag">AI</span>
+          <span v-for="name in (t.tags || [])" :key="'tag-' + name" class="kb-tag tag">{{ name }}</span>
           <span v-if="overdue(t)" class="kb-tag overdue" :title="'Hạn chót ' + t.dueDate">⏰ {{ t.dueDate }}</span>
           <span v-else-if="t.dueDate && t.status !== 'Done'" class="kb-tag">⏱ {{ t.dueDate }}</span>
           <span v-if="t.doneDate" class="kb-tag">✓ {{ t.doneDate }}</span>

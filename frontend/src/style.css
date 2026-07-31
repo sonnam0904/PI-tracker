@@ -338,7 +338,14 @@ input, textarea { user-select: text; }
 }
 
 /* ===== Forms ===== */
-.field { display: flex; flex-direction: column; gap: 6px; }
+/* min-width: 0 là bắt buộc, không phải cho đẹp. Con của .field tự giãn hết chiều
+   ngang nhờ flex stretch, nhưng chiều rộng TỐI THIỂU của .field lại bị kéo theo
+   min-content của con — mà <select> có min-content bằng option DÀI NHẤT. Ô "Task
+   gốc sinh ra bug" liệt kê mọi task của workspace kèm tiêu đề đầy đủ, nên nó phình
+   .field ra vài trăm px; cột 1fr của .form-grid không co xuống dưới mức đó được và
+   modal tràn ngang. (Modal có overflow-y: auto nên overflow-x tự thành auto theo
+   spec — đó là thanh cuộn ngang nhìn thấy ở đáy popup.) */
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
 .field input, .field select, .field textarea {
   background: var(--bg);
@@ -350,6 +357,9 @@ input, textarea { user-select: text; }
   color-scheme: dark;
 }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+/* Đã co được thì chữ trong select sẽ bị cắt — cho nó "…" để người đọc biết là còn
+   nữa. Cắt trần giữa từ dễ bị hiểu thành một giá trị khác. */
+.field select { text-overflow: ellipsis; }
 .field textarea { resize: vertical; min-height: 66px; }
 
 .date-wrap { display: flex; gap: 6px; }
@@ -361,7 +371,9 @@ input, textarea { user-select: text; }
 }
 .date-wrap .clear:hover { color: var(--red); }
 
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
+/* min-width: 0 ở đây chặn cùng một chuyện một tầng cao hơn: .form-grid là ô con
+   của .detail-grid (1fr 350px), nên nếu nó không co được thì cột 1fr cũng không. */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; min-width: 0; }
 .form-grid .full { grid-column: 1 / -1; }
 
 .checkbox {
@@ -952,6 +964,8 @@ input, textarea { user-select: text; }
 }
 .tt-assignee { display: inline-flex; align-items: center; gap: 7px; }
 .tt-status { font-weight: 600; font-size: 12.5px; }
+/* Cột Tag: nhiều pill trên một ô, xuống dòng khi chật */
+.tt-tags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 220px; }
 
 .kb-empty {
   text-align: center;
@@ -1142,6 +1156,12 @@ input, textarea { user-select: text; }
   border-color: var(--red); font-weight: 600;
 }
 .kb-tag.late { color: var(--amber); border-color: var(--amber); margin-left: 4px; }
+/* Tag phân loại: tô nhẹ màu accent để tách khỏi các pill số liệu (size/AI/ngày) */
+.kb-tag.tag {
+  background: var(--accent-soft); color: var(--accent);
+  border-color: transparent; max-width: 160px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .due-overdue { color: var(--red); font-weight: 700; }
 .due-late { color: var(--amber); }

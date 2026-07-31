@@ -21,7 +21,8 @@ sudo apt install ./task-manager_<ver>_amd64.deb
 sudo dnf install ./task-manager-<ver>.x86_64.rpm
 ```
 
-Bản cài đặt (release) dùng thư mục **`~/.pi-tracker/`** làm nơi lưu dữ liệu & cấu hình:
+Bản cài đặt (release) dùng thư mục `~/.pi-tracker/` làm nơi lưu dữ liệu & cấu hình:
+
 - Lần chạy đầu tự tạo thư mục và đặt sẵn `~/.pi-tracker/.env.example`.
 - Cần cấu hình Postgres/MySQL hoặc AI: copy `~/.pi-tracker/.env.example` → `~/.pi-tracker/.env` rồi sửa.
 - Mặc định dùng SQLite → DB nằm ở `~/.pi-tracker/taskmanager.db`.
@@ -68,6 +69,17 @@ DB_PASSWORD=secret
 DB_NAME=taskmanager
 DB_SCHEMA=              # (postgres) search_path; bỏ trống = public, tự tạo nếu chưa có
 ```
+
+### Xem SQL khi phát triển
+
+Log GORM mặc định tắt. Bật bằng `DB_LOG`:
+
+```env
+DB_LOG=info             # silent (mặc định) | error | warn | info
+DB_SLOW_QUERY_MS=200    # ngưỡng đánh dấu SLOW SQL, chỉ dùng từ warn trở lên
+```
+
+`DB_LOG=info` in mọi câu SQL kèm thời gian chạy, số hàng và vị trí gọi trong code:
 
 Mặc định dùng SQLite — không cần server DB. Schema tự migrate khi khởi động.
 

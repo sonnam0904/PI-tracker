@@ -2,6 +2,8 @@ package database
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -21,6 +23,37 @@ import (
 // bindings` (Wails chạy chính app để trích xuất binding). Giữ ngắn để lỗi
 // nhanh và hiện banner "Thử lại".
 const connectTimeout = 8 * time.Second
+
+// gormLogger dựng logger GORM theo DB_LOG.
+//
+// Mặc định IM LẶNG: lỗi DB đã hiển thị trên banner ở UI, không cần đổ SQL/lỗi
+// kết nối ra stdout (gây nhiễu khi chạy ./task-manager từ terminal).
+//
+// DB_LOG=info in MỌI câu SQL kèm thời gian chạy và số hàng ra stdout — đây là
+// cách kiểm một truy vấn có thật sự lọc ở DB hay đang tải hết về rồi lọc trong Go.
+// Chạy bằng `wails dev` thì log hiện ở terminal đang chạy nó.
+func gormLogger(cfg *config.Config) logger.Interface {
+	level := logger.Silent
+	switch strings.ToLower(strings.TrimSpace(cfg.LogLevel)) {
+	case "info", "sql", "debug", "all":
+		level = logger.Info
+	case "warn", "slow":
+		level = logger.Warn
+	case "error":
+		level = logger.Error
+	}
+	if level == logger.Silent {
+		return logger.Default.LogMode(logger.Silent)
+	}
+	return logger.New(
+		log.New(os.Stdout, "[sql] ", log.LstdFlags),
+		logger.Config{
+			SlowThreshold: time.Duration(cfg.SlowQueryMS) * time.Millisecond,
+			LogLevel:      level,
+			Colorful:      true,
+		},
+	)
+}
 
 // Connect opens the database chosen by DB_DRIVER and runs migrations, với trần
 // thời gian để không bao giờ treo vô hạn khi DB không tới được.
@@ -82,11 +115,7 @@ func connect(cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("unsupported DB_DRIVER %q (want sqlite, postgres or mysql)", cfg.Driver)
 	}
 
-	// Logger im lặng: lỗi DB đã hiển thị trên banner ở UI, không cần đổ SQL/
-	// lỗi kết nối ra stdout (gây nhiễu khi chạy ./task-manager từ terminal).
-	db, err := gorm.Open(dialector, &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
+	db, err := gorm.Open(dialector, &gorm.Config{Logger: gormLogger(cfg)})
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", cfg.Driver, err)
 	}
@@ -105,7 +134,8 @@ func connect(cfg *config.Config) (*gorm.DB, error) {
 		&models.TodoItem{}, &models.Activity{}, &models.StatusChange{},
 		&models.User{}, &models.Workspace{}, &models.WorkspaceMember{},
 		&models.Invitation{}, &models.Notification{}, &models.SavedView{},
-		&models.Session{}, &models.TaskDependency{}); err != nil {
+		&models.Session{}, &models.TaskDependency{},
+		&models.Tag{}, &models.TaskTag{}); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	if err := backfillActivityWorkspace(db); err != nil {
