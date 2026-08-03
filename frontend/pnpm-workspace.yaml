@@ -1,0 +1,4 @@
+# Cấu hình pnpm (từ pnpm 11 settings nằm ở đây, không còn đọc field "pnpm" trong package.json).
+# esbuild cần chạy postinstall để lấy binary đúng nền tảng, nên phải cho phép build.
+allowBuilds:
+  esbuild: true

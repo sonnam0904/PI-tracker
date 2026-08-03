@@ -74,9 +74,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # pnpm phải cài trước setup-node để bật cache theo pnpm-lock.yaml.
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install Linux deps
         if: runner.os == 'Linux'

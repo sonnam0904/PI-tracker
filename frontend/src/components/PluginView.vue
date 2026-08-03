@@ -1,7 +1,8 @@
 <script setup>
-// Trang hướng dẫn cài plugin Claude Code chứa skill "bao-cao-thang".
+// Trang hướng dẫn cài plugin Claude Code chứa hai skill "bao-cao-thang" và
+// "estimate-tinh-nang".
 // Thuần tĩnh: không gọi backend, vì việc cài plugin diễn ra trong Claude Code
-// chứ không phải trong app này. Nhiệm vụ của trang là cho người dùng đúng hai
+// chứ không phải trong app này. Nhiệm vụ của trang là cho người dùng đúng những
 // lệnh cần gõ và giải thích những chỗ dễ hiểu sai.
 import { ref } from 'vue'
 import { ClipboardSetText } from '../../wailsjs/runtime'
@@ -22,10 +23,14 @@ const REPO_URL = 'https://github.com/sonnam0904/PI-tracker'
 // Ba tên độc lập nhau, phải khớp đúng manifest:
 //   MARKETPLACE = field `name` trong .claude-plugin/marketplace.json
 //   PLUGIN      = field `name` trong plugins/pi-tracker/.claude-plugin/plugin.json
-// Skill goi bang /<plugin>:<skill> = /pi-tracker:bao-cao-thang 
+// Skill goi bang /<plugin>:<skill> = /pi-tracker:bao-cao-thang
 // Cú pháp /plugin install luôn là <plugin>@<marketplace>, không đảo được.
 const MARKETPLACE = 'pi-tracker'
 const PLUGIN = 'pi-tracker'
+
+// Hai skill của plugin. Một lần cài được cả hai — không có lệnh cài riêng từng skill.
+const cmdReport = `/${PLUGIN}:bao-cao-thang`
+const cmdEstimate = `/${PLUGIN}:estimate-tinh-nang`
 
 const cmdAdd = `/plugin marketplace add sonnam0904/PI-tracker`
 const cmdInstall = `/plugin install ${PLUGIN}@${MARKETPLACE}`
@@ -47,15 +52,15 @@ const steps = [
     title: 'Cài plugin',
     cmd: cmdInstall,
     key: 'install',
-    desc: 'Sau khi cài, skill gọi bằng /pi-tracker:bao-cao-thang — tiền tố là tên plugin. Hoặc chỉ cần ' +
-          'nhắc "làm báo cáo tháng" là Claude tự chọn skill này.',
+    desc: 'Một lần cài được cả 2 skill. Gọi bằng /pi-tracker:<tên skill> — tiền tố là tên plugin. ' +
+          'Hoặc chỉ cần nói “làm báo cáo tháng” / “estimate tính năng này” là Claude tự chọn skill phù hợp.',
   },
   {
     n: 3,
     title: 'Kiểm tra môi trường (chạy một lần)',
     cmd: cmdSetup,
     key: 'setup',
-    desc: 'Dò python3 trên máy và hướng dẫn cài nếu thiếu. Cả 3 script của skill chạy bằng python3 — ' +
+    desc: 'Dò python3 trên máy và hướng dẫn cài nếu thiếu. Script của cả 2 skill đều chạy bằng python3 — ' +
           'thiếu nó thì bước lấy dữ liệu không chạy được. Đã có python3 rồi thì lệnh này chỉ báo ' +
           '“sẵn sàng” rồi dừng, không cài gì.',
   },
@@ -74,8 +79,9 @@ const tools = [
       <div>
         <div class="page-title">Claude Plugin</div>
         <div class="page-sub">
-          Cài skill <b>bao-cao-thang</b> vào Claude Code để sinh báo cáo công việc hằng tháng
-          từ dữ liệu PI Tracker — bản Excel ngắn gọn để trình bày và bản Markdown đầy đủ kèm nhận định.
+          Cài plugin <b>pi-tracker</b> vào Claude Code để làm việc với dữ liệu PI Tracker bằng
+          ngôn ngữ tự nhiên. Plugin gồm 2 skill: <b>báo cáo công việc hằng tháng</b> và
+          <b>estimate ngày công</b> cho tính năng khách yêu cầu.
         </div>
       </div>
     </div>
@@ -114,19 +120,47 @@ const tools = [
     </div>
 
     <div class="card">
-      <div class="card-title">Dùng skill</div>
-      <ul class="pl-list">
-        <li>Gọi trực tiếp: <code>/pi-tracker:bao-cao-thang</code></li>
-        <li>Hoặc nói tự nhiên: “tổng hợp công việc tháng 7”, “xuất báo cáo excel theo giải pháp”.</li>
-      </ul>
+      <div class="card-head">
+        <div class="card-title">Skill 1 — Báo cáo tháng</div>
+        <span class="pl-tag">tổng hợp việc đã làm</span>
+      </div>
+      <div class="mcp-copy">
+        <code class="mcp-code">{{ cmdReport }}</code>
+        <button class="btn sm ghost" @click="copy('skill-report', cmdReport)">
+          {{ copied === 'skill-report' ? '✓ Đã chép' : 'Chép' }}
+        </button>
+      </div>
+      <p class="hint pl-step-desc">
+        Hoặc nói tự nhiên: “tổng hợp công việc tháng 7”, “xuất báo cáo excel theo giải pháp”.
+      </p>
       <p class="hint" style="margin-top: 12px">
-        Skill sinh ra hai file trong thư mục làm việc: <code>bao-cao-thang-&lt;MM&gt;-&lt;YYYY&gt;.xlsx</code>
+        Sinh ra hai file trong thư mục làm việc: <code>bao-cao-thang-&lt;MM&gt;-&lt;YYYY&gt;.xlsx</code>
         (số liệu, mỗi giải pháp một sheet) và <code>bao-cao-thang-&lt;MM&gt;-&lt;YYYY&gt;.md</code>
         (nhận định, xu hướng, rủi ro, khuyến nghị).
       </p>
       <p class="hint">
         Hạng mục công việc trong báo cáo lấy từ trường <b>Phân loại tag</b> của task — hãy gắn tag
         cho task trong app trước khi chạy, task chưa gắn tag sẽ bị gom vào nhóm “(chưa gắn tag)”.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">Skill 2 — Estimate tính năng</div>
+        <span class="pl-tag">ngày công cho việc chưa làm</span>
+      </div>
+      <div class="mcp-copy">
+        <code class="mcp-code">{{ cmdEstimate }}</code>
+        <button class="btn sm ghost" @click="copy('skill-estimate', cmdEstimate)">
+          {{ copied === 'skill-estimate' ? '✓ Đã chép' : 'Chép' }}
+        </button>
+      </div>
+      <p class="hint pl-step-desc">
+        Hoặc nói tự nhiên: “estimate tính năng này”, “khách hỏi làm mất bao lâu”,
+        “chia đầu việc để báo giá”.
+      </p>
+      <p class="hint" style="margin-top: 12px">
+        Sinh ra file trong thư mục làm việc: <code>estimate-&lt;slug&gt;.xlsx</code> 
       </p>
     </div>
 
@@ -169,6 +203,22 @@ const tools = [
    viền và padding, nhét vào giữa câu sẽ phá dòng. Lấy màu accent cho khớp
    .mcp-tool-name, để mọi chỗ hiện tên lệnh đều đọc ra là "lệnh". */
 .pl-list code { color: var(--accent); font-size: 12.5px; }
+
+/* Card của từng skill: tiêu đề + nhãn phân biệt trên cùng một dòng. .card-title
+   tự mang margin-bottom 12px, bỏ đi để margin của .card-head chi phối cả hàng. */
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.card-head .card-title { margin-bottom: 0; }
+.pl-tag {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  text-transform: none;
+  letter-spacing: 0;
+}
 
 .pl-step { margin-top: 16px; }
 .pl-step:first-of-type { margin-top: 8px; }

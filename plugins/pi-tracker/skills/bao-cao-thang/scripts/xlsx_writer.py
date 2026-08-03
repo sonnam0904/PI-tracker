@@ -42,6 +42,7 @@ FONTS = [
     ("Calibri", 11, True, False, "FFC00000"),    # 6 do dam (canh bao)
     ("Calibri", 10, False, False, "FF000000"),   # 7 nho
     ("Calibri", 10, False, True, "FF595959"),    # 8 nho in nghieng
+    ("Calibri", 9, False, True, "FF000000"),     # 9 nho in nghieng den (chu thich tren nen mau)
 ]
 
 FILLS = [
@@ -55,6 +56,12 @@ FILLS = [
     "FFFFF2CC",    # 7 vang nhat (Minor)
     "FFE2EFDA",    # 8 xanh la nhat (tot)
     "FFFDEAEA",    # 9 hong nhat (khoi canh bao)
+    # 10-12: mau cua MAU ESTIMATE cong ty (skill estimate-tinh-nang). Them vao
+    # CUOI danh sach vi FILLS/XFS danh chi so theo thu tu — chen vao giua se doi
+    # id cua moi style dung sau no va lam hong ban bao cao thang.
+    "FFFFFF00",    # 10 vang (nhan khoi meta)
+    "FFF2DCDB",    # 11 hong nhat (header bang)
+    "FFFFC000",    # 12 cam (dong TONG)
 ]
 
 # xf: (numFmtId, fontId, fillId, borderId, halign, valign, wrap)
@@ -100,6 +107,15 @@ XFS = {
     "small":     (0, 7, 0, 1, "left", "center", False),
     "small_wrap": (0, 7, 0, 1, "left", "top", True),
     "small_num": (164, 7, 0, 1, "right", "center", False),
+
+    # --- Mau estimate cong ty (skill estimate-tinh-nang). Them vao CUOI: xem
+    # ghi chu o FILLS ve thu tu chi so.
+    "tpl_label": (0, 1, 10, 1, "center", "center", True),   # nhan meta nen vang
+    "tpl_value": (0, 0, 0, 1, "left", "center", True),      # gia tri meta
+    "tpl_h":     (0, 1, 11, 1, "center", "center", True),   # header bang nen hong
+    "tpl_tot":   (0, 1, 12, 1, "center", "center", True),   # o dong TONG nen cam
+    "tpl_tot_num": (164, 1, 12, 1, "center", "center", False),
+    "tpl_tot_note": (0, 9, 12, 1, "center", "center", True),
 }
 STYLE_IDS = {name: i for i, name in enumerate(XFS)}
 

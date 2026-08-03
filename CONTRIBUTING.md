@@ -6,7 +6,7 @@ Mọi tương tác trong dự án tuân theo [Quy tắc ứng xử](CODE_OF_COND
 
 ## Chuẩn bị môi trường
 
-- Go ≥ 1.25, Node.js ≥ 18 (npm)
+- Go ≥ 1.25, Node.js ≥ 18, pnpm (bản dùng cho dự án được ghim ở `frontend/package.json` qua field `packageManager` — chạy `corepack enable pnpm` để Node tự dùng đúng bản)
 - Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - Linux (Ubuntu/Debian): `sudo apt install gcc libgtk-3-dev libwebkit2gtk-4.1-dev`
 
@@ -24,7 +24,7 @@ wails dev                # chạy dev, hot reload frontend
 3. **Test**: đảm bảo xanh trước khi mở PR.
    ```bash
    go test ./...                    # test backend Go
-   cd frontend && npm run build     # kiểm tra frontend build
+   cd frontend && pnpm run build    # kiểm tra frontend build
    ```
 4. **Commit**: dùng [Conventional Commits](https://www.conventionalcommits.org/) — dự án dùng semantic-release để tự phát hành, nên tiền tố commit ảnh hưởng số phiên bản:
    - `feat: …` → tăng minor

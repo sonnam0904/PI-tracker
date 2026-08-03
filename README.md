@@ -33,7 +33,7 @@ Biến môi trường thật vẫn được ưu tiên hơn `.env` (tiện cho de
 
 **Yêu cầu môi trường:**
 
-- Go ≥ 1.25 · Node.js ≥ 18 (npm)
+- Go ≥ 1.25 · Node.js ≥ 18 · pnpm (`corepack enable pnpm`)
 - Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - Linux (Ubuntu/Debian): `sudo apt install gcc libgtk-3-dev libwebkit2gtk-4.1-dev`
 

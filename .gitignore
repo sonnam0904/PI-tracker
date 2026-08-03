@@ -16,3 +16,12 @@ openwiki/
 !plugins/**/*.md
 plugins/**/__pycache__/
 CLAUDE.md
+
+/tasks.json
+/people.json
+/baseline.json
+/metrics.json
+/wbs-*.json
+/estimate-*.json
+/estimate-*.xlsx
+/bao-cao-thang-*.xlsx

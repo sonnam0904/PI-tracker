@@ -1,7 +1,7 @@
 {
   "name": "pi-tracker",
   "version": "1.0.0",
-  "description": "Skill làm việc với dữ liệu PI Tracker (báo cáo tháng).",
+  "description": "Skill làm việc với dữ liệu PI Tracker (báo cáo tháng, estimate ngày công).",
   "author": {
     "name": "sonnn",
     "email": "sonnn.uct@gmail.com"
@@ -13,6 +13,8 @@
     "pi-tracker",
     "bao-cao",
     "report",
-    "productivity"
+    "productivity",
+    "estimate",
+    "effort"
   ]
 }

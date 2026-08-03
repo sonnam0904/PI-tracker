@@ -8,7 +8,7 @@
     {
       "name": "pi-tracker",
       "source": "./plugins/pi-tracker",
-      "description": "Skill sinh báo cáo công việc hằng tháng từ dữ liệu PI Tracker."
+      "description": "Skill làm việc với dữ liệu PI Tracker: báo cáo công việc hằng tháng, và estimate ngày công cho tính năng khách yêu cầu."
     }
   ]
 }
