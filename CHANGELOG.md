@@ -1,3 +1,10 @@
+## [1.10.1](https://github.com/sonnam0904/PI-tracker/compare/v1.10.0...v1.10.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* update GitHub Actions workflow for pnpm setup ([c84b1db](https://github.com/sonnam0904/PI-tracker/commit/c84b1db2499d34e81cd14f1cc7eb226f251b7e6f))
+
 # [1.10.0](https://github.com/sonnam0904/PI-tracker/compare/v1.9.0...v1.10.0) (2026-08-14)
 
 
