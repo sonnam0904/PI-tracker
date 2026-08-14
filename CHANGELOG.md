@@ -1,3 +1,10 @@
+## [1.10.2](https://github.com/sonnam0904/PI-tracker/compare/v1.10.1...v1.10.2) (2026-08-14)
+
+
+### Bug Fixes
+
+* update Node.js version in GitHub Actions and package.json ([38ead48](https://github.com/sonnam0904/PI-tracker/commit/38ead4853223bc488a37e1f5c468c96ff5b9bda6))
+
 ## [1.10.1](https://github.com/sonnam0904/PI-tracker/compare/v1.10.0...v1.10.1) (2026-08-14)
 
 
