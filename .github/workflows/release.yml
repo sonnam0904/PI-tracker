@@ -28,9 +28,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      # Job này chỉ chạy semantic-release (không cần pnpm), nhưng giữ cùng mốc
+      # Node với job build để hai job không lệch nhau.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Semantic Release
         id: semantic
@@ -85,9 +87,14 @@ jobs:
         with:
           package_json_file: frontend/package.json
 
+      # Node phải ≥ 22.13: pnpm 11 dùng node:sqlite (chỉ có từ 22.5) và tự chặn
+      # Node < 22.13, còn vite 7 khai engines "^20.19.0 || >=22.12.0". Node 20 làm
+      # `pnpm store path` — lệnh setup-node gọi để bật cache — chết ngay với
+      # ERR_UNKNOWN_BUILTIN_MODULE. Bump pnpm trong frontend/package.json thì
+      # kiểm lại mốc này.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
