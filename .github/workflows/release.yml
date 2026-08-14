@@ -75,7 +75,15 @@ jobs:
           cache: true
 
       # pnpm phải cài trước setup-node để bật cache theo pnpm-lock.yaml.
+      #
+      # package_json_file là BẮT BUỘC ở repo này: action mặc định đọc
+      # "packageManager" từ package.json ở gốc repo, mà gốc repo không có
+      # package.json nào (frontend là project npm duy nhất) — thiếu dòng này
+      # action dừng với "No pnpm version is specified".
+      # Trỏ vào frontend/package.json để version pnpm chỉ khai báo một chỗ.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
 
       - uses: actions/setup-node@v4
         with:
