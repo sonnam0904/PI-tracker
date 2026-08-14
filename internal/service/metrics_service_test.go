@@ -2,6 +2,7 @@ package service
 
 import (
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -387,9 +388,9 @@ func TestComputeBugRatioNoTasks(t *testing.T) {
 	}
 }
 
-// Bug quy về task gốc qua RelatedTaskID: tính cho tháng task gốc Done,
-// bất kể bug được fix tháng nào hay chưa fix; tôn trọng "ngày tính" theo
-// ngày TẠO bug.
+// Bug quy về task gốc qua RelatedTaskID: tính cho tháng task gốc Done, bất kể
+// bug được fix tháng nào, chưa fix, hay nhập vào tracker lúc nào — created_at
+// KHÔNG còn ảnh hưởng (xem TaskService.CountBugsByOrigin).
 func TestComputeBugOrigin(t *testing.T) {
 	e := testEnv(t)
 
@@ -405,7 +406,7 @@ func TestComputeBugOrigin(t *testing.T) {
 		}
 		return task.ID
 	}
-	mkBug := func(origin uint, created time.Time, status models.TaskStatus, done *time.Time) {
+	mkBug := func(origin uint, created time.Time, status models.TaskStatus, done *time.Time) uint {
 		bug := models.Task{
 			WorkspaceID: e.wsID, Title: "bug", Type: models.TypeBug,
 			Status: status, RelatedTaskID: &origin,
@@ -414,18 +415,20 @@ func TestComputeBugOrigin(t *testing.T) {
 		if err := e.tasks.Save(&bug); err != nil {
 			t.Fatalf("save bug: %v", err)
 		}
+		return bug.ID
 	}
 
 	taskJuly := mkTask("july task", day(7, 8))
 	taskJune := mkTask("june task", day(6, 20))
 
 	augDone := day(8, 5)
-	mkBug(taskJuly, day(7, 5), models.StatusTodo, nil)       // chưa fix → vẫn tính
-	mkBug(taskJuly, day(7, 10), models.StatusDone, &augDone) // fix tháng 8 → vẫn tính cho tháng 7
-	mkBug(taskJuly, day(7, 20), models.StatusTodo, nil)      // tạo sau ngày tính 15/07
-	mkBug(taskJune, day(7, 1), models.StatusTodo, nil)       // bug của task tháng 6, phát hiện tháng 7
+	bug1 := mkBug(taskJuly, day(7, 5), models.StatusTodo, nil)       // chưa fix → vẫn tính
+	bug2 := mkBug(taskJuly, day(7, 10), models.StatusDone, &augDone) // fix tháng 8 → vẫn tính cho tháng 7
+	bug3 := mkBug(taskJuly, day(8, 20), models.StatusTodo, nil)      // NHẬP BÙ tháng 8 → vẫn phải tính
+	mkBug(taskJune, day(7, 1), models.StatusTodo, nil)               // bug của task tháng 6, phát hiện tháng 7
 
-	// Tháng 7, ngày tính 15/07: 2 bug của taskJuly (bug 20/07 chưa tồn tại).
+	// Tháng 7, ngày tính 15/07: đủ 3 bug của taskJuly. Bug nhập bù ngày 20/08
+	// vẫn tính — ngày gõ dữ liệu vào hệ thống không phải mốc nghiệp vụ.
 	m, _, err := e.metrics.Compute(e.wsID, day(7, 15), day(7, 15), 0)
 	if err != nil {
 		t.Fatalf("compute: %v", err)
@@ -433,18 +436,19 @@ func TestComputeBugOrigin(t *testing.T) {
 	if m.DoneCount != 1 {
 		t.Fatalf("DoneCount = %d, want 1 (chỉ july task)", m.DoneCount)
 	}
-	if m.OriginBugCount != 2 {
-		t.Errorf("OriginBugCount = %d, want 2 (bug chưa fix + bug fix tháng 8)", m.OriginBugCount)
+	if m.OriginBugCount != 3 {
+		t.Errorf("OriginBugCount = %d, want 3 (chưa fix + fix tháng 8 + nhập bù)", m.OriginBugCount)
 	}
-	if math.Abs(m.OriginBugRatio-2) > 1e-9 {
-		t.Errorf("OriginBugRatio = %f, want 2", m.OriginBugRatio)
+	if math.Abs(m.OriginBugRatio-3) > 1e-9 {
+		t.Errorf("OriginBugRatio = %f, want 3", m.OriginBugRatio)
 	}
 	// Bug fix tháng 8 KHÔNG nằm trong BugDoneCount tháng 7 (chỉ số fix theo tháng).
 	if m.BugDoneCount != 0 {
 		t.Errorf("BugDoneCount = %d, want 0 (không bug nào fix xong trong cửa sổ)", m.BugDoneCount)
 	}
 
-	// Tháng 7 chốt sổ 31/07: bug tạo 20/07 được tính thêm.
+	// Đổi "ngày tính" KHÔNG làm thay đổi số bug theo nguồn gốc: nó lọc task Done,
+	// không lọc bug.
 	m, _, err = e.metrics.Compute(e.wsID, day(7, 15), day(7, 31), 0)
 	if err != nil {
 		t.Fatalf("compute: %v", err)
@@ -467,12 +471,18 @@ func TestComputeBugOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("done tasks: %v", err)
 	}
-	origin, err := e.metrics.BugsByOrigin(e.wsID, done, day(7, 31))
+	origin, err := e.metrics.BugsByOrigin(e.wsID, done)
 	if err != nil {
 		t.Fatalf("bugs by origin: %v", err)
 	}
-	if origin[taskJuly] != 3 || origin[taskJune] != 0 {
-		t.Errorf("origin map = %v, want {%d: 3}", origin, taskJuly)
+	// Map giữ ID từng bug (không chỉ số lượng) để báo cáo in "#89, #91" và trỏ
+	// sang bảng bug — nên phải đúng cả ID lẫn thứ tự (tăng dần theo ID).
+	if want := []uint{bug1, bug2, bug3}; !slices.Equal(origin[taskJuly], want) {
+		t.Errorf("origin[taskJuly] = %v, want %v", origin[taskJuly], want)
+	}
+	// taskJune Done tháng 6 nên không có mặt trong kỳ này.
+	if len(origin[taskJune]) != 0 {
+		t.Errorf("origin[taskJune] = %v, want rỗng (task ngoài kỳ)", origin[taskJune])
 	}
 }
 
@@ -556,10 +566,10 @@ func TestComputePoints(t *testing.T) {
 	}
 }
 
-// TestSettingsPointBaselineBackfill: bản ghi settings đời cũ (PointBaseline = 0)
-// phải được điền mặc định khi đọc — chỉ số Điểm/tháng luôn có baseline.
-// ROI ứng dụng AI: nhóm dùng AI (cycle ngắn) phải cho AICycleTime thấp hơn
-// nhóm không AI, và AISpeedupPct dương; effort split đúng theo cờ AIUsed.
+// ROI ứng dụng AI: nhóm dùng AI (cycle ngắn) phải cho AICycleTime thấp hơn nhóm
+// không AI. Bốn field cycle này là nguồn duy nhất của card "ROI ứng dụng AI" trên
+// Dashboard (báo cáo xuất ra cố ý không in phần ROI), nên sai ở đây là sai ngay
+// trên màn hình chính.
 func TestComputeAIRoi(t *testing.T) {
 	e := testEnv(t)
 	now := time.Date(2026, 7, 20, 0, 0, 0, 0, time.Local)
@@ -598,33 +608,14 @@ func TestComputeAIRoi(t *testing.T) {
 	if math.Abs(m.NonAICycleTime-6) > 1e-9 {
 		t.Errorf("NonAICycleTime = %f, want 6", m.NonAICycleTime)
 	}
-	sp, ok := m.AISpeedupPct()
-	if !ok {
-		t.Fatal("AISpeedupPct ok=false, want true")
-	}
-	if math.Abs(sp-(1-2.0/6.0)*100) > 1e-9 {
-		t.Errorf("AISpeedupPct = %f, want %f", sp, (1-2.0/6.0)*100)
-	}
-	// Effort split: nhóm AI est khớp effort (lệch 0); nhóm không AI est lạc quan.
-	if m.AIEffortCount != 2 || m.NonAIEffortCount != 2 {
-		t.Fatalf("effort counts = %d/%d, want 2/2", m.AIEffortCount, m.NonAIEffortCount)
-	}
-	if math.Abs(m.AIEffortTotal-4) > 1e-9 || math.Abs(m.AIEstPairedTotal-4) > 1e-9 {
-		t.Errorf("nhóm AI effort/est = %f/%f, want 4/4", m.AIEffortTotal, m.AIEstPairedTotal)
-	}
-	if math.Abs(m.NonAIEffortTotal-12) > 1e-9 || math.Abs(m.NonAIEstPairedTotal-8) > 1e-9 {
-		t.Errorf("nhóm không AI effort/est = %f/%f, want 12/8", m.NonAIEffortTotal, m.NonAIEstPairedTotal)
+	// Effort thực tế vẫn cộng chung (không còn tách theo nhóm AI).
+	if m.ActualEffortCount != 4 || math.Abs(m.ActualEffortTotal-16) > 1e-9 {
+		t.Errorf("effort chung = %d task/%f ngày, want 4/16", m.ActualEffortCount, m.ActualEffortTotal)
 	}
 }
 
-// Thiếu một nhóm (chỉ có task AI) → AISpeedupPct ok=false, không chia cho 0.
-func TestAISpeedupNeedsBothGroups(t *testing.T) {
-	m := Metrics{AICycleCount: 3, AICycleTime: 2, NonAICycleCount: 0}
-	if _, ok := m.AISpeedupPct(); ok {
-		t.Error("thiếu nhóm không-AI phải trả ok=false")
-	}
-}
-
+// TestSettingsPointBaselineBackfill: bản ghi settings đời cũ (PointBaseline = 0)
+// phải được điền mặc định khi đọc — chỉ số Điểm/tháng luôn có baseline.
 func TestSettingsPointBaselineBackfill(t *testing.T) {
 	db := testDB(t)
 	settings := NewSettingsService(db)

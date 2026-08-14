@@ -30,7 +30,7 @@ function clearAll() {
     <input
       v-model="cfg.q"
       class="filter-search"
-      placeholder="🔍 Tìm theo tiêu đề / mô tả / tag, hoặc #ID task…"
+      placeholder="🔍 Tìm theo tiêu đề / mô tả / tag, hoặc #12 để tra đúng ID…"
       title="Gõ #41 để lọc ra task có ID 41. Tìm được cả theo tiêu đề, mô tả và tên tag."
     />
 

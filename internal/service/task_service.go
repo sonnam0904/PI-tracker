@@ -222,31 +222,39 @@ func (s *TaskService) DoneBetween(wsID uint, from, to time.Time, assigneeID uint
 	return tasks, err
 }
 
-// CountBugsByOrigin đếm số bug quy về từng task gốc qua related_task_id.
-// Tính MỌI trạng thái bug (bug còn mở vẫn là lỗi task đó sinh ra), nhưng chỉ
-// bug tạo trước mốc createdBefore để tôn trọng "ngày tính" khi chốt sổ báo cáo.
-func (s *TaskService) CountBugsByOrigin(wsID uint, originIDs []uint, createdBefore time.Time) (map[uint]int, error) {
-	counts := make(map[uint]int, len(originIDs))
+// BugIDsByOrigin trả về map task gốc → ID các bug quy về nó qua related_task_id
+// (tăng dần theo ID). Trả về chính ID chứ không chỉ số lượng vì báo cáo cần in
+// "#89" ở cột "Bug phát sinh" rồi trỏ sang bảng bug; số lượng chỉ là len().
+//
+// Tính MỌI bug đã liên kết: mọi trạng thái (bug còn mở vẫn là lỗi task đó sinh
+// ra) và không phân biệt bug được nhập vào tracker lúc nào.
+//
+// Trước đây có lọc thêm created_at < "ngày tính". Bỏ đi vì created_at là lúc GÕ
+// DỮ LIỆU vào hệ thống, không phải mốc nghiệp vụ: nhập bù task tháng trước —
+// cách dùng bình thường ở đây — làm mọi bug rơi ra ngoài mốc chốt sổ, nên cột
+// "Bug phát sinh" của task cha và chỉ số "Tỷ lệ bug theo nguồn gốc" luôn bằng 0
+func (s *TaskService) BugIDsByOrigin(wsID uint, originIDs []uint) (map[uint][]uint, error) {
+	byOrigin := make(map[uint][]uint, len(originIDs))
 	if len(originIDs) == 0 {
-		return counts, nil
+		return byOrigin, nil
 	}
 	var rows []struct {
+		ID            uint
 		RelatedTaskID uint
-		N             int
 	}
 	err := s.db.Model(&models.Task{}).
-		Select("related_task_id, COUNT(*) AS n").
-		Where("workspace_id = ? AND type = ? AND related_task_id IN ? AND created_at < ?",
-			wsID, models.TypeBug, originIDs, createdBefore).
-		Group("related_task_id").
+		Select("id, related_task_id").
+		Where("workspace_id = ? AND type = ? AND related_task_id IN ?",
+			wsID, models.TypeBug, originIDs).
+		Order("id ASC").
 		Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rows {
-		counts[r.RelatedTaskID] = r.N
+		byOrigin[r.RelatedTaskID] = append(byOrigin[r.RelatedTaskID], r.ID)
 	}
-	return counts, nil
+	return byOrigin, nil
 }
 
 // DueSoonForUser trả về task gán cho user (mọi workspace) chưa Done và có

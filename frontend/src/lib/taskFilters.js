@@ -82,18 +82,30 @@ export function sameConfig(a, b) {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+// ID_QUERY — ô tìm nhanh đang tra ĐÚNG MỘT id: "#12" (cho phép khoảng trắng sau
+// dấu #). Chỉ toàn chữ số mới tính; "#12 lỗi" hay "#" trơ là tìm text bình thường.
+const ID_QUERY = /^#\s*(\d+)$/
+
 export function matchesConfig(t, cfg) {
   const needle = (cfg.q || '').trim().toLowerCase()
-  // Tìm nhanh quét cả tên tag — gõ tên tag là ra ngay các task thuộc tag đó —
-  // và cả "#<id>", để copy id từ danh sách/báo cáo rồi dán vào là ra đúng task.
-  //
-  // Đưa "#id" vào chung đống rơm (không tách nhánh riêng) là cố ý: gõ "#4" lọc
-  // ra mọi id bắt đầu bằng 4, thu hẹp dần theo từng ký tự đúng như phần còn lại
-  // của ô tìm kiếm, và khớp cách combobox chọn task phụ thuộc đang làm.
+  // Tìm nhanh quét cả tên tag — gõ tên tag là ra ngay các task thuộc tag đó.
   if (needle) {
-    const hay = [`#${t.id}`, t.title || '', t.description || '', ...(t.tags || [])]
-      .join(' ').toLowerCase()
-    if (!hay.includes(needle)) return false
+    const idOnly = needle.match(ID_QUERY)
+    if (idOnly) {
+      // "#12" là tra CHÍNH XÁC task id 12, không phải "id có chứa 12": gõ "#1"
+      // mà ra cả #12, #31, #201 thì số đếm "n/81 task" vô nghĩa và vẫn phải tự
+      // soi từng dòng. Đây là bộ lọc nên phải trả đúng cái được hỏi — khác
+      // combobox chọn task phụ thuộc (TaskModal), nơi thu hẹp dần theo từng ký
+      // tự là đúng vì người dùng NHÌN danh sách gợi ý rồi bấm chọn.
+      if (Number(idOnly[1]) !== Number(t.id)) return false
+    } else {
+      // Nhánh text vẫn giữ "#<id>" trong đống rơm: gõ số trơ ("12") hoặc dán cả
+      // câu có "#12" vẫn tìm được như trước — "#" là dạng tra chính xác, không
+      // phải cách duy nhất tìm theo id.
+      const hay = [`#${t.id}`, t.title || '', t.description || '', ...(t.tags || [])]
+        .join(' ').toLowerCase()
+      if (!hay.includes(needle)) return false
+    }
   }
   const conds = (cfg.conditions || []).filter(c => c.field && c.op)
   if (!conds.length) return true

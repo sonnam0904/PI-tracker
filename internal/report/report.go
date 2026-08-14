@@ -21,12 +21,25 @@ type Data struct {
 	Settings     models.Settings
 	Tasks        []models.Task // task Done trong tháng (đã lọc theo AsOf + nhân sự)
 	People       map[uint]string
-	// taskID → số bug quy về task gốc đó (phân tích nguồn gốc qua RelatedTaskID,
-	// bug mọi trạng thái, bất kể fix tháng nào). nil = không có dữ liệu.
-	OriginBugs map[uint]int
+	// taskID → ID các bug quy về task gốc đó (phân tích nguồn gốc qua
+	// RelatedTaskID, bug mọi trạng thái, bất kể fix tháng nào). Giữ ID chứ không
+	// chỉ số lượng để cột "Bug phát sinh" in được "#89" và .xlsx trỏ được sang
+	// dòng bug tương ứng ở bảng dưới. nil = không có dữ liệu.
+	OriginBugs map[uint][]uint
 	// taskID → tên các tag phân loại. Tag là quan hệ nhiều-nhiều nên không nằm
 	// trên models.Task; phải truyền vào đây để phụ lục in được cột Tag.
 	TaskTags map[uint][]string
+
+	// Members: báo cáo riêng của TỪNG thành viên, chỉ có ở bản toàn team
+	// (AssigneeName == ""). Mỗi phần tử là một Data hoàn chỉnh — AssigneeName,
+	// Metrics/Advice tính riêng với baseline 1 người, Tasks đã lọc theo người đó
+	// — nên render bằng đúng code render báo cáo cá nhân: .xlsx cho mỗi người một
+	// sheet, .pdf cho mỗi người một trang.
+	//
+	// Số liệu ở đây do tầng app tính (mỗi người một lượt MetricsService.Compute),
+	// KHÔNG chia lại từ Metrics của team: T/CT/PI không cộng trừ tuyến tính được.
+	// Phần tử con luôn để Members rỗng — chỉ lồng một cấp.
+	Members []Data
 }
 
 func (d *Data) monthLabel() string {
@@ -219,8 +232,13 @@ func aiImpactLines(d Data) []kv {
 	m := d.Metrics
 	var lines []kv
 
-	// Mọi chỉ số AI/estimate lấy từ Metrics (đã bóc bug ra khỏi task thường)
-	// để App UI và báo cáo luôn khớp nhau tuyệt đối.
+	// Mọi số ở đây lấy từ Metrics (đã bóc bug ra khỏi task thường), nên số nào
+	// cùng xuất hiện ở App UI thì luôn khớp tuyệt đối với báo cáo.
+	//
+	// Báo cáo in ÍT hơn App UI, có chủ ý: không in estimate (số nội bộ lúc lập kế
+	// hoạch — xem taskHeaders) và không in phần ROI so nhóm AI vs không AI. Card
+	// "ROI ứng dụng AI" trên Dashboard vẫn còn; nó là công cụ nội bộ, không phải
+	// nội dung gửi ra ngoài. Đừng "sửa" chỗ này cho khớp UI.
 	lines = append(lines, kv{"Số task hoàn thành trong tháng", fmt.Sprintf("%d task", m.DoneCount)})
 	if m.BugDoneCount > 0 {
 		bugLine := fmt.Sprintf("%d bug — T_bug %s bug/tháng, CT_bug %s ngày/bug", m.BugDoneCount, f2(m.BugThroughput), f2(m.BugCycleTime))
@@ -235,98 +253,128 @@ func aiImpactLines(d Data) []kv {
 			fmt.Sprintf("%d/%d task dùng AI (%.0f%%), %d task không AI",
 				m.AIUsedCount, m.DoneCount, float64(m.AIUsedCount)/float64(m.DoneCount)*100, nonAI)})
 	}
-	lines = append(lines, kv{"Tổng estimate báo khách hàng", f1(m.EstCustomerTotal) + " ngày"})
-	lines = append(lines, kv{"Tổng estimate làm bằng AI", f1(m.EstAITotal) + " ngày"})
 	lines = append(lines, kv{"Tổng thời gian làm thực tế (cycle)", f1(m.ActualCycleTotal) + " ngày"})
 
-	if m.EstCustomerTotal > 0 {
-		saved := m.EstCustomerTotal - m.EstAITotal
-		lines = append(lines, kv{"Tiết kiệm kế hoạch (est. khách − est. AI)",
-			fmt.Sprintf("%s ngày (%.0f%% so với báo khách)", f1(saved), saved/m.EstCustomerTotal*100)})
-		actualSaved := m.EstCustomerTotal - m.ActualCycleTotal
-		if actualSaved >= 0 {
-			lines = append(lines, kv{"Tiết kiệm thực tế (est. khách − cycle thực)",
-				fmt.Sprintf("%s ngày — hoàn thành nhanh hơn cam kết %.0f%%", f1(actualSaved), actualSaved/m.EstCustomerTotal*100)})
-		} else {
-			lines = append(lines, kv{"Tiết kiệm thực tế (est. khách − cycle thực)",
-				fmt.Sprintf("%s ngày — CHẬM hơn cam kết %.0f%%", f1(actualSaved), -actualSaved/m.EstCustomerTotal*100)})
-		}
-	}
-	if m.EstAITotal > 0 && m.ActualCycleTotal > 0 {
-		diff := (m.ActualCycleTotal - m.EstAITotal) / m.EstAITotal * 100
-		lines = append(lines, kv{"Độ sát estimate AI so với thực tế",
-			fmt.Sprintf("lệch %s (thực %s / est %s ngày)", pct(diff), f1(m.ActualCycleTotal), f1(m.EstAITotal))})
-	}
-
-	// ---- ROI ứng dụng AI: so nhóm dùng AI vs không AI ----
-	if sp, ok := m.AISpeedupPct(); ok {
-		cmp, v := "nhanh hơn", sp
-		if v < 0 {
-			cmp, v = "chậm hơn", -v
-		}
-		lines = append(lines, kv{"ROI tốc độ — cycle time AI vs không AI",
-			fmt.Sprintf("%s vs %s ngày/task (%d/%d task) — task dùng AI %s %.0f%%",
-				f1(m.AICycleTime), f1(m.NonAICycleTime), m.AICycleCount, m.NonAICycleCount, cmp, v)})
-	}
-	if m.AIEffortCount > 0 && m.AIEstPairedTotal > 0 {
-		dev := (m.AIEffortTotal - m.AIEstPairedTotal) / m.AIEstPairedTotal * 100
-		lines = append(lines, kv{"ROI ước lượng — độ lệch est AI ↔ effort thực (nhóm AI)",
-			fmt.Sprintf("lệch %s (effort %s / est %s ngày, %d task)", pct(dev), f1(m.AIEffortTotal), f1(m.AIEstPairedTotal), m.AIEffortCount)})
-	}
-	if m.NonAIEffortCount > 0 && m.NonAIEstPairedTotal > 0 {
-		dev := (m.NonAIEffortTotal - m.NonAIEstPairedTotal) / m.NonAIEstPairedTotal * 100
-		lines = append(lines, kv{"ROI ước lượng — độ lệch est AI ↔ effort thực (nhóm không AI)",
-			fmt.Sprintf("lệch %s (effort %s / est %s ngày, %d task)", pct(dev), f1(m.NonAIEffortTotal), f1(m.NonAIEstPairedTotal), m.NonAIEffortCount)})
-	}
-
-	lines = append(lines, kv{"PI so với baseline (1.00)", fmt.Sprintf("%s (%s so với trước khi áp dụng AI)", f2(m.PI), pct((m.PI-1)*100))})
 	return lines
 }
 
 // ---- Phụ lục task ----
 
-var taskHeaders = []string{"#ID", "Tiêu đề", "Phụ trách", "Loại", "Size", "AI", "Est khách (ngày)", "Est AI (ngày)", "Cycle (ngày)", "Start", "Done", "Bug phát sinh", "Tag"}
+// taskHeaders — KHÔNG in hai cột estimate (Est khách / Est AI). Estimate là số
+// nội bộ lúc lập kế hoạch; phần đánh giá đã có Cycle (thời gian thực) và các chỉ
+// số ở mục 1-3, nên bày estimate ra từng dòng chỉ làm bảng rộng thêm và mời gọi
+// so sánh sai. Hai cột này vẫn còn trong models.Task và trong app — chỉ ẩn khỏi
+// báo cáo xuất ra.
+var taskHeaders = []string{"#ID", "Tiêu đề", "Phụ trách", "Loại", "Size", "AI", "Cycle (ngày)", "Start", "Done", "Bug phát sinh", "Tag"}
 
-// taskRow dựng một dòng phụ lục. Cột đầu là ID task trong DB (không phải số
-// thứ tự) để khớp với tham chiếu "← #ID" ở cột Bug phát sinh.
-func taskRow(d Data, t models.Task) []string {
-	assignee := "—"
+// bugHeaders — bảng bug tách riêng. Cột GIỮ ĐÚNG VỊ TRÍ của bảng task để hai
+// bảng nằm cùng sheet vẫn thẳng cột (một sheet Excel chỉ có một bộ độ rộng):
+// "Mức độ" đứng chỗ "Loại", "Task gốc" đứng chỗ "Bug phát sinh". "Cách đóng"
+// không có cột tương ứng bên bảng task nên thêm vào cuối.
+var bugHeaders = []string{"#ID", "Tiêu đề", "Phụ trách", "Mức độ", "Size", "AI", "Cycle (ngày)", "Start", "Done", "Task gốc", "Tag", "Cách đóng"}
+
+// originColIdx — vị trí (1-based, tức cột J) của cặp cột liên kết hai bảng:
+// "Bug phát sinh" bên bảng task và "Task gốc" bên bảng bug. Dùng chung một hằng
+// vì hai bảng CỐ Ý xếp hai cột này cùng chỗ, và .xlsx đặt hyperlink theo nó.
+const originColIdx = 10
+
+// splitTasks tách danh sách thành task thường và bug — báo cáo in hai bảng
+// riêng vì hai loại đọc bằng thước khác nhau: task thường tính vào T/CT/PI,
+// bug là chi phí chất lượng bóc riêng.
+func splitTasks(tasks []models.Task) (plain, bugs []models.Task) {
+	for _, t := range tasks {
+		if t.IsBug() {
+			bugs = append(bugs, t)
+		} else {
+			plain = append(plain, t)
+		}
+	}
+	return plain, bugs
+}
+
+// ---- ô dùng chung cho cả bảng task lẫn bảng bug ----
+
+func (d Data) assigneeCell(t models.Task) string {
 	if t.AssigneeID != nil {
 		if n, ok := d.People[*t.AssigneeID]; ok {
-			assignee = n
+			return n
 		}
 	}
-	ai := "Không"
-	if t.AIUsed {
-		ai = "Có"
-	}
-	cycle := "—"
-	if c, ok := t.CycleDays(); ok {
-		cycle = f1(c)
-	}
-	date := func(p *time.Time) string {
-		if p == nil {
-			return "—"
-		}
-		return p.Format("02/01/2006")
-	}
-	// Cột nguồn gốc: task thường hiện số bug nó sinh ra;
-	// dòng bug hiện liên kết ngược về task gốc.
-	originCol := "—"
-	if t.IsBug() {
-		if t.RelatedTaskID != nil {
-			originCol = fmt.Sprintf("#%d", *t.RelatedTaskID)
-		}
-	} else if n := d.OriginBugs[t.ID]; n > 0 {
-		originCol = fmt.Sprintf("%d bug", n)
-	}
-	tagCol := "—"
+	return "—"
+}
+
+func (d Data) tagCell(t models.Task) string {
 	if names := d.TaskTags[t.ID]; len(names) > 0 {
-		tagCol = strings.Join(names, ", ")
+		return strings.Join(names, ", ")
+	}
+	return "—"
+}
+
+func aiCell(t models.Task) string {
+	if t.AIUsed {
+		return "Có"
+	}
+	return "Không"
+}
+
+func cycleCell(t models.Task) string {
+	if c, ok := t.CycleDays(); ok {
+		return f1(c)
+	}
+	return "—"
+}
+
+func dateCell(p *time.Time) string {
+	if p == nil {
+		return "—"
+	}
+	return p.Format("02/01/2006")
+}
+
+// dash trả về "—" cho chuỗi rỗng, để ô trống không bị hiểu nhầm là lỗi xuất file.
+func dash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	return s
+}
+
+// originBugsCell in danh sách ID bug mà task đã SINH RA, tra qua RelatedTaskID
+// của các bug. In thẳng "#89, #91" thay vì "2 bug" để đối chiếu được với cột
+// "#ID" của bảng bug — .xlsx còn biến ô này thành liên kết tới đúng dòng bug.
+// Trống nghĩa là chưa bug nào được gán task gốc trong tracker — báo cáo không
+// suy diễn hộ.
+func (d Data) originBugsCell(t models.Task) string {
+	ids := d.OriginBugs[t.ID]
+	if len(ids) == 0 {
+		return "—"
+	}
+	refs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		refs = append(refs, fmt.Sprintf("#%d", id))
+	}
+	return strings.Join(refs, ", ")
+}
+
+// taskRow dựng một dòng bảng task thường (không bug). Cột đầu là ID task trong
+// DB (không phải số thứ tự) để khớp với tham chiếu "#ID" ở bảng bug.
+func taskRow(d Data, t models.Task) []string {
+	return []string{
+		fmt.Sprintf("#%d", t.ID), t.Title, d.assigneeCell(t), t.Type.Label(), string(t.Size), aiCell(t),
+		cycleCell(t), dateCell(t.StartDate), dateCell(t.DoneDate), d.originBugsCell(t), d.tagCell(t),
+	}
+}
+
+// bugRow dựng một dòng bảng bug — thứ tự cột theo bugHeaders.
+func bugRow(d Data, t models.Task) []string {
+	origin := "—"
+	if t.RelatedTaskID != nil {
+		origin = fmt.Sprintf("#%d", *t.RelatedTaskID)
 	}
 	return []string{
-		fmt.Sprintf("#%d", t.ID), t.Title, assignee, t.Type.Label(), string(t.Size), ai,
-		f1(t.EstimateCustomerDays), f1(t.EstimateAIDays), cycle, date(t.StartDate), date(t.DoneDate),
-		originCol, tagCol,
+		fmt.Sprintf("#%d", t.ID), t.Title, d.assigneeCell(t), dash(string(t.Severity)),
+		string(t.Size), aiCell(t),
+		cycleCell(t), dateCell(t.StartDate), dateCell(t.DoneDate), origin, d.tagCell(t),
+		dash(string(t.Resolution)),
 	}
 }

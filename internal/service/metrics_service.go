@@ -46,8 +46,13 @@ type Metrics struct {
 	BugRatio float64
 
 	// Chất lượng theo NGUỒN GỐC: bug quy về task gốc qua RelatedTaskID —
-	// đếm mọi bug (kể cả chưa fix, bất kể fix tháng nào) đã liên kết tới các
-	// task Done trong tháng này, miễn bug được tạo trước hết "ngày tính".
+	// đếm MỌI bug đã liên kết tới các task Done trong tháng này: kể cả chưa fix,
+	// bất kể fix tháng nào và bất kể nhập vào tracker lúc nào.
+	//
+	// LƯU Ý hai chỉ số này CỐ Ý không bị chặn theo "ngày tính" (now), khác với
+	// DoneCount và phần phụ lục: lý do ở TaskService.BugIDsByOrigin. Hệ quả là
+	// xuất lại báo cáo một tháng đã chốt có thể ra số bug cao hơn lần xuất trước,
+	// nếu trong lúc đó có bug mới được liên kết về task cũ.
 	OriginBugCount int
 	OriginBugRatio float64 // OriginBugCount ÷ DoneCount (bug sinh ra / task Done)
 
@@ -73,32 +78,15 @@ type Metrics struct {
 	AIUsedCount int
 
 	// ---- ROI ứng dụng AI: tách task thường (không bug) Done trong tháng theo
-	// cờ AIUsed, để đo AI có giúp làm NHANH và ƯỚC LƯỢNG SÁT hơn không. ----
+	// cờ AIUsed, để đo AI có giúp làm NHANH hơn không. ----
 	// Cycle time trung bình mỗi nhóm (ngày/task, đã trừ blocked); *CycleCount =
-	// số task đủ start/done góp vào trung bình đó.
+	// số task đủ start/done góp vào trung bình đó. Card "ROI ứng dụng AI" trên
+	// Dashboard đọc trực tiếp bốn field này; báo cáo xuất ra CỐ Ý không in phần
+	// ROI (xem report.aiImpactLines).
 	AICycleTime     float64
 	AICycleCount    int
 	NonAICycleTime  float64
 	NonAICycleCount int
-	// Đối chiếu estimate AI ↔ effort thực (chỉ task đã nhập ActualDays) theo
-	// nhóm: *EstPairedTotal là tổng est AI của CHÍNH các task đã nhập effort,
-	// so trên cùng một tập để công bằng. *EffortCount = số task nhập effort.
-	AIEstPairedTotal    float64
-	AIEffortTotal       float64
-	AIEffortCount       int
-	NonAIEstPairedTotal float64
-	NonAIEffortTotal    float64
-	NonAIEffortCount    int
-}
-
-// AISpeedupPct trả về % cycle time task dùng AI NHANH hơn task không AI
-// (dương = nhanh hơn, âm = chậm hơn). ok=false khi một trong hai nhóm chưa có
-// task đủ start/done để so sánh.
-func (m Metrics) AISpeedupPct() (float64, bool) {
-	if m.AICycleCount == 0 || m.NonAICycleCount == 0 || m.NonAICycleTime == 0 {
-		return 0, false
-	}
-	return (1 - m.AICycleTime/m.NonAICycleTime) * 100, true
 }
 
 // Advice tells the dev what is needed to reach the target PI by month end.
@@ -147,19 +135,19 @@ func (s *MetricsService) DoneTasksAsOf(wsID uint, month, now time.Time, assignee
 	return s.tasks.DoneBetween(wsID, start, doneUpper, assigneeID)
 }
 
-// BugsByOrigin trả về map taskID → số bug quy về task gốc đó qua RelatedTaskID.
-// Đếm bug ở MỌI trạng thái (bug chưa fix vẫn là lỗi task sinh ra), bất kể bug
-// được fix tháng nào; chỉ giới hạn bug tạo trước hết ngày now để khớp "ngày tính".
+// BugsByOrigin trả về map taskID → ID các bug quy về task gốc đó qua
+// RelatedTaskID. Lấy MỌI trạng thái (bug chưa fix vẫn là lỗi task sinh ra), bất
+// kể bug được fix tháng nào và nhập vào tracker lúc nào.
 // tasks là danh sách task cần phân tích (phần tử loại bug được bỏ qua).
 // Dùng chung cho Compute và phụ lục báo cáo để hai nơi luôn khớp nhau.
-func (s *MetricsService) BugsByOrigin(wsID uint, tasks []models.Task, now time.Time) (map[uint]int, error) {
+func (s *MetricsService) BugsByOrigin(wsID uint, tasks []models.Task) (map[uint][]uint, error) {
 	ids := make([]uint, 0, len(tasks))
 	for _, t := range tasks {
 		if !t.IsBug() {
 			ids = append(ids, t.ID)
 		}
 	}
-	return s.tasks.CountBugsByOrigin(wsID, ids, dayAfter(now))
+	return s.tasks.BugIDsByOrigin(wsID, ids)
 }
 
 // Compute evaluates all indicators for the calendar month containing month.
@@ -272,16 +260,6 @@ func (s *MetricsService) Compute(wsID uint, month, now time.Time, assigneeID uin
 			m.ActualEffortTotal += t.ActualDays
 			m.ActualEffortCount++
 			m.EstAIPairedTotal += t.EstimateAIDays
-			// Cùng số liệu, tách theo nhóm để so độ sát estimate AI vs không AI.
-			if t.AIUsed {
-				m.AIEffortTotal += t.ActualDays
-				m.AIEstPairedTotal += t.EstimateAIDays
-				m.AIEffortCount++
-			} else {
-				m.NonAIEffortTotal += t.ActualDays
-				m.NonAIEstPairedTotal += t.EstimateAIDays
-				m.NonAIEffortCount++
-			}
 		}
 		if t.AIUsed {
 			m.AIUsedCount++
@@ -328,12 +306,12 @@ func (s *MetricsService) Compute(wsID uint, month, now time.Time, assigneeID uin
 
 	// Phân tích nguồn gốc: task Done tháng này đã sinh ra bao nhiêu bug
 	// (bug quy về task gốc, bất kể bug được fix tháng nào).
-	origin, err := s.BugsByOrigin(wsID, plain, now)
+	origin, err := s.BugsByOrigin(wsID, plain)
 	if err != nil {
 		return Metrics{}, st, err
 	}
-	for _, n := range origin {
-		m.OriginBugCount += n
+	for _, bugIDs := range origin {
+		m.OriginBugCount += len(bugIDs)
 	}
 	if m.DoneCount > 0 {
 		m.OriginBugRatio = float64(m.OriginBugCount) / float64(m.DoneCount)

@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"taskmanager/internal/models"
+	"taskmanager/internal/report"
 	"taskmanager/internal/service"
 )
 
@@ -996,6 +997,143 @@ func TestMemberObserverAndOwnerOnly(t *testing.T) {
 	if err := app.SaveSettings(models.Settings{TBaseline: 1, CTBaseline: 1, PITarget: 1, Capacity: 2}); err == nil ||
 		!strings.Contains(err.Error(), "owner") {
 		t.Fatalf("member SaveSettings phải bị chặn (chỉ owner), nhận: %v", err)
+	}
+}
+
+// Báo cáo toàn team kèm mỗi thành viên một sheet/trang: observer (người chỉ
+// quan sát) KHÔNG được có phần riêng — họ không nhận task nên chấm PI cho họ
+// là sai.
+func TestMemberReportsBoQuaObserver(t *testing.T) {
+	app := testApp(t)
+
+	loginApp(t, app, "alice") // alice = owner
+	bobSession, err := app.Register("bob", "secret123")
+	if err != nil {
+		t.Fatalf("register bob: %v", err)
+	}
+	if _, err := app.Login("alice", "secret123"); err != nil {
+		t.Fatalf("login alice: %v", err)
+	}
+	if err := app.InviteMember("bob"); err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	if _, err := app.Login("bob", "secret123"); err != nil {
+		t.Fatalf("login bob: %v", err)
+	}
+	if err := app.RespondInvitation(*findInviteID(t, app), true); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := app.Login("alice", "secret123"); err != nil {
+		t.Fatalf("login alice: %v", err)
+	}
+
+	wsID, err := app.requireWorkspace()
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	now := time.Now()
+	ten := func(rs []report.Data) []string {
+		out := make([]string, 0, len(rs))
+		for _, r := range rs {
+			out = append(out, r.AssigneeName)
+		}
+		return out
+	}
+
+	memberReports := func() []report.Data {
+		t.Helper()
+		sc, err := app.loadReportScope(wsID, now, now, 0)
+		if err != nil {
+			t.Fatalf("loadReportScope: %v", err)
+		}
+		rs, err := app.memberReports(wsID, now, now, sc)
+		if err != nil {
+			t.Fatalf("memberReports: %v", err)
+		}
+		return rs
+	}
+
+	reports := memberReports()
+	if got := ten(reports); len(got) != 2 || got[0] != "alice" || got[1] != "bob" {
+		t.Fatalf("trước observer = %q, want [alice bob]", got)
+	}
+
+	if err := app.SetMemberObserver(bobSession.UserID, true); err != nil {
+		t.Fatalf("đặt observer: %v", err)
+	}
+	reports = memberReports()
+	if got := ten(reports); len(got) != 1 || got[0] != "alice" {
+		t.Fatalf("sau observer = %q, want [alice] (bob là observer)", got)
+	}
+	// Baseline của phần cá nhân phải là 1 người, không phải cả team.
+	if ts := reports[0].Metrics.TeamSize; ts != 1 {
+		t.Errorf("TeamSize phần cá nhân = %d, want 1", ts)
+	}
+}
+
+// Nút "Mở thư mục" sau khi xuất báo cáo: mỗi hệ điều hành một cách CHỌN SẴN
+// file, sai dạng đối số thì file manager chỉ mở thư mục hoặc không mở gì.
+func TestRevealCommand(t *testing.T) {
+	const abs = "/home/ai/Bản tải về/bao-cao-pi-2026-07.xlsx"
+	cases := []struct {
+		goos string
+		want []string
+	}{
+		{"darwin", []string{"open", "-R", abs}},
+		// Đường dẫn phải DÍNH LIỀN "/select," — tách làm hai đối số thì explorer
+		// mở thư mục Documents chứ không chọn file.
+		{"windows", []string{"explorer", "/select," + abs}},
+		// --print-reply là bắt buộc: thiếu nó dbus-send thoát 0 dù không có
+		// service nào đăng ký FileManager1, nên nhánh xdg-open dự phòng trong
+		// RevealInFileManager không bao giờ chạy và nút bấm im lặng không làm gì.
+		{"linux", []string{
+			"dbus-send", "--session", "--print-reply", "--reply-timeout=10000",
+			"--dest=org.freedesktop.FileManager1",
+			"--type=method_call", "/org/freedesktop/FileManager1",
+			"org.freedesktop.FileManager1.ShowItems",
+			"array:string:file:///home/ai/B%E1%BA%A3n%20t%E1%BA%A3i%20v%E1%BB%81/bao-cao-pi-2026-07.xlsx",
+			"string:",
+		}},
+	}
+	for _, c := range cases {
+		got := revealCommand(c.goos, abs).Args
+		if len(got) != len(c.want) {
+			t.Errorf("%s: %d đối số, want %d (%q)", c.goos, len(got), len(c.want), got)
+			continue
+		}
+		for i := range got {
+			// Phần tử 0 là tên lệnh; exec.Command có thể để nguyên tên chưa phân giải.
+			if got[i] != c.want[i] {
+				t.Errorf("%s: đối số[%d] = %q, want %q", c.goos, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+// URI trong lệnh DBus phải được escape: người dùng tự đặt tên file ở hộp thoại
+// Lưu, mà '#' bị bên nhận cắt thành fragment (chọn sai file, hoặc không chọn gì)
+// và '%' bị đọc thành escape sequence hỏng. Cả hai ca đều KHÔNG làm dbus-send
+// thất bại, nên không có gì báo lỗi — chỉ sai âm thầm.
+func TestRevealCommandEscapeURI(t *testing.T) {
+	cases := map[string]string{
+		"/home/ai/Tài liệu/bao-cao #2.xlsx": "file:///home/ai/T%C3%A0i%20li%E1%BB%87u/bao-cao%20%232.xlsx",
+		"/home/ai/Sale 100%/bao-cao.xlsx":   "file:///home/ai/Sale%20100%25/bao-cao.xlsx",
+	}
+	for abs, wantURI := range cases {
+		args := revealCommand("linux", abs).Args
+		want := "array:string:" + wantURI
+		found := false
+		for _, a := range args {
+			if a == want {
+				found = true
+			}
+			if strings.Contains(a, "#") {
+				t.Errorf("%q: đối số %q còn '#' chưa escape", abs, a)
+			}
+		}
+		if !found {
+			t.Errorf("%q: không thấy đối số %q trong %q", abs, want, args)
+		}
 	}
 }
 

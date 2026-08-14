@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -2001,6 +2006,132 @@ func (a *App) GetMetrics(month string, assigneeID uint, asOf string) (MetricsRes
 	return MetricsResult{Metrics: metrics, Advice: advice, Settings: st}, nil
 }
 
+// reportScope gom những thứ KHÔNG phụ thuộc người phụ trách trong một lần xuất
+// file, nạp đúng một lần rồi dùng lại cho cả bản team lẫn từng sheet cá nhân.
+// Trước đây mỗi thứ ở đây là một query lặp theo từng thành viên: một team 20
+// người phải trả giá vài chục lượt truy vấn trùng ngay trong đường xuất file.
+type reportScope struct {
+	members  []service.Member // đã sắp theo username
+	names    map[uint]string
+	taskTags map[uint][]string
+
+	// tasks: task Done trong tháng ở phạm vi rộng nhất mà lần xuất này cần, và
+	// scopeID là phạm vi đó (0 = cả team). originBugs tính trên chính tasks.
+	// Task của một thành viên là TẬP CON của tasks và mọi key origin của người đó
+	// nằm trong originBugs, nên bản cá nhân lọc trong bộ nhớ chứ không query lại.
+	scopeID    uint
+	tasks      []models.Task
+	originBugs map[uint][]uint
+}
+
+// tasksOf trả về task Done của một người, lọc từ danh sách đã nạp. Điều kiện lọc
+// khớp đúng với "assignee_id = ?" của TaskService.DoneBetween.
+func (sc reportScope) tasksOf(assigneeID uint) []models.Task {
+	if assigneeID == sc.scopeID {
+		return sc.tasks
+	}
+	out := make([]models.Task, 0, len(sc.tasks))
+	for _, t := range sc.tasks {
+		if t.AssigneeID != nil && *t.AssigneeID == assigneeID {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// originBugsOf thu hẹp map bug-theo-task-gốc về đúng các task được truyền vào.
+func (sc reportScope) originBugsOf(tasks []models.Task) map[uint][]uint {
+	out := make(map[uint][]uint, len(tasks))
+	for _, t := range tasks {
+		if ids := sc.originBugs[t.ID]; len(ids) > 0 {
+			out[t.ID] = ids
+		}
+	}
+	return out
+}
+
+// loadReportScope nạp phần dùng chung cho một lần xuất báo cáo.
+//
+// assigneeID quyết định phạm vi task nạp về: bản toàn team (0) cần task của mọi
+// người để tách ra từng sheet cá nhân, bản một người chỉ cần task của người đó.
+func (a *App) loadReportScope(wsID uint, month, now time.Time, assigneeID uint) (reportScope, error) {
+	members, err := a.workspaces.Members(wsID)
+	if err != nil {
+		return reportScope{}, err
+	}
+	names := make(map[uint]string, len(members))
+	for _, mb := range members {
+		names[mb.ID] = mb.Name
+	}
+	tasks, err := a.metrics.DoneTasksAsOf(wsID, month, now, assigneeID)
+	if err != nil {
+		return reportScope{}, err
+	}
+	// Phân tích nguồn gốc: task Done trong tháng đã sinh ra bao nhiêu bug
+	// (cột "Bug phát sinh" trong phụ lục) — cùng nguồn số liệu với Metrics.
+	originBugs, err := a.metrics.BugsByOrigin(wsID, tasks)
+	if err != nil {
+		return reportScope{}, err
+	}
+	// Tag phân loại cho cột "Tag" của phụ lục — nhiều-nhiều nên không nằm trên
+	// models.Task, phải nạp riêng theo workspace.
+	taskTags, err := a.tags.NamesByTask(wsID)
+	if err != nil {
+		return reportScope{}, err
+	}
+	return reportScope{
+		members: members, names: names, taskTags: taskTags,
+		scopeID: assigneeID, tasks: tasks, originBugs: originBugs,
+	}, nil
+}
+
+// buildReportData dựng report.Data cho một phạm vi (assigneeID = 0 là toàn team).
+//
+// MỘT chỗ duy nhất biết report.Data gồm những gì: bản team và các sheet cá nhân
+// nằm trong CÙNG một file, nên nếu dựng ở hai nơi thì thêm một field mới mà chỉ
+// sửa một nơi sẽ làm hai bên lệch nhau mà không có gì báo.
+//
+// Chỉ số vẫn tính riêng từng người qua MetricsService.Compute (baseline 1 người,
+// WIP riêng), KHÔNG chia nhỏ số của team: T/CT/PI không cộng trừ tuyến tính được.
+func (a *App) buildReportData(wsID uint, month, now time.Time, assigneeID uint, assigneeName string, sc reportScope) (report.Data, error) {
+	metrics, st, err := a.metrics.Compute(wsID, month, now, assigneeID)
+	if err != nil {
+		return report.Data{}, err
+	}
+	tasks := sc.tasksOf(assigneeID)
+	return report.Data{
+		Month: month, AsOf: now, AssigneeName: assigneeName,
+		Metrics: metrics, Advice: a.metrics.Advise(metrics, st),
+		Settings: st, Tasks: tasks, People: sc.names,
+		OriginBugs: sc.originBugsOf(tasks), TaskTags: sc.taskTags,
+	}, nil
+}
+
+// memberReports dựng báo cáo riêng của TỪNG thành viên cho bản toàn team —
+// .xlsx cho mỗi người một sheet, .pdf cho mỗi người một trang.
+//
+// Lấy mọi thành viên LÀM VIỆC, kể cả người tháng này chưa Done task nào: thiếu
+// tên trong file dễ bị đọc thành bỏ sót người, còn sheet PI 0.00 thì tự nó đã
+// là thông tin.
+//
+// TRỪ observer (người quan sát/quản lý): họ không nhận task nên báo cáo cá nhân
+// chỉ toàn số 0, mà chấm PI người không làm task là sai. Cùng quy ước với
+// TeamSize trong MetricsService.Compute — observer không kể vào baseline team.
+func (a *App) memberReports(wsID uint, month, now time.Time, sc reportScope) ([]report.Data, error) {
+	out := make([]report.Data, 0, len(sc.members))
+	for _, mem := range sc.members {
+		if mem.Observer {
+			continue
+		}
+		d, err := a.buildReportData(wsID, month, now, mem.ID, mem.Name, sc)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 // ExportReport xuất báo cáo PI của tháng (format: "xlsx" | "pdf").
 func (a *App) ExportReport(month, format, asOf string, assigneeID uint) (string, error) {
 	wsID, err := a.requireWorkspace()
@@ -2011,46 +2142,28 @@ func (a *App) ExportReport(month, format, asOf string, assigneeID uint) (string,
 	if err != nil {
 		return "", err
 	}
-	metrics, st, err := a.metrics.Compute(wsID, m, now, assigneeID)
-	if err != nil {
-		return "", err
-	}
-	advice := a.metrics.Advise(metrics, st)
-	tasks, err := a.metrics.DoneTasksAsOf(wsID, m, now, assigneeID)
-	if err != nil {
-		return "", err
-	}
-	names, err := a.workspaces.MemberNames(wsID)
+	sc, err := a.loadReportScope(wsID, m, now, assigneeID)
 	if err != nil {
 		return "", err
 	}
 	assigneeName := ""
 	if assigneeID != 0 {
-		assigneeName = names[assigneeID]
+		assigneeName = sc.names[assigneeID]
 		if assigneeName == "" {
 			return "", fmt.Errorf("không tìm thấy thành viên id %d", assigneeID)
 		}
 	}
-
-	// Phân tích nguồn gốc: task Done trong tháng đã sinh ra bao nhiêu bug
-	// (cột "Bug phát sinh" trong phụ lục) — cùng nguồn số liệu với Metrics.
-	originBugs, err := a.metrics.BugsByOrigin(wsID, tasks, now)
+	data, err := a.buildReportData(wsID, m, now, assigneeID, assigneeName, sc)
 	if err != nil {
 		return "", err
 	}
 
-	// Tag phân loại cho cột "Tag" của phụ lục — nhiều-nhiều nên không nằm trên
-	// models.Task, phải nạp riêng theo workspace.
-	taskTags, err := a.tags.NamesByTask(wsID)
-	if err != nil {
-		return "", err
-	}
-
-	data := report.Data{
-		Month: m, AsOf: now, AssigneeName: assigneeName,
-		Metrics: metrics, Advice: advice,
-		Settings: st, Tasks: tasks, People: names,
-		OriginBugs: originBugs, TaskTags: taskTags,
+	// Bản toàn team kèm báo cáo riêng của TỪNG thành viên.
+	if assigneeID == 0 {
+		data.Members, err = a.memberReports(wsID, m, now, sc)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	var content []byte
@@ -2088,6 +2201,90 @@ func (a *App) ExportReport(month, format, asOf string, assigneeID uint) (string,
 		return "", fmt.Errorf("ghi file: %w", err)
 	}
 	return path, nil
+}
+
+// RevealInFileManager mở trình quản lý tệp của hệ điều hành tại thư mục chứa
+// path và CHỌN SẴN file đó — dùng cho nút "Mở thư mục" sau khi xuất báo cáo.
+//
+// Mỗi hệ điều hành một cách chọn file; nếu không chọn được thì vẫn phải mở được
+// thư mục, vì mục đích của nút là đưa người dùng tới chỗ file nằm:
+//   - macOS:   open -R <file>
+//   - Windows: explorer /select,<file> — explorer trả exit code 1 cả khi thành
+//     công, nên bỏ qua lỗi thoát ở đây (xem bên dưới).
+//   - Linux:   DBus FileManager1.ShowItems (Nautilus/Dolphin/Nemo… đều hỗ trợ),
+//     hỏng thì rơi về xdg-open mở thư mục mà không chọn file.
+//
+// Tham số là đường dẫn file, không phải lệnh: mọi lời gọi đều đi qua exec.Command
+// với đối số tách rời, không qua shell, nên tên file có dấu cách hay ký tự lạ
+// không thể biến thành lệnh khác.
+func (a *App) RevealInFileManager(path string) error {
+	if path == "" {
+		return fmt.Errorf("chưa có đường dẫn file")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	// Kiểm tra trước để báo đúng nguyên nhân: file bị xóa/di chuyển sau khi xuất
+	// thì mở thư mục cũng vô nghĩa.
+	if _, err := os.Stat(abs); err != nil {
+		return fmt.Errorf("không còn thấy file %s: %w", abs, err)
+	}
+
+	runErr := revealCommand(goruntime.GOOS, abs).Run()
+	switch goruntime.GOOS {
+	case "windows":
+		// explorer.exe hầu như luôn trả exit code 1 kể cả khi mở thành công, nên
+		// báo lỗi theo MÃ THOÁT ở đây là báo nhầm — bỏ qua đúng loại lỗi đó thôi.
+		// Lỗi trước khi process kịp chạy (không tìm thấy explorer, bị policy
+		// chặn) là lỗi thật: nuốt luôn thì người dùng bấm nút, không có gì mở ra
+		// mà cũng không có thông báo nào để lần theo.
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return nil
+		}
+		return runErr
+	case "darwin":
+		return runErr
+	default:
+		if runErr == nil {
+			return nil
+		}
+		// Không có DBus hoặc file manager không đăng ký giao diện đó: chấp nhận
+		// mở thư mục mà không chọn sẵn file, còn hơn không mở được gì.
+		return exec.Command("xdg-open", filepath.Dir(abs)).Run()
+	}
+}
+
+// revealCommand dựng lệnh mở file manager và chọn sẵn file abs (đường dẫn tuyệt
+// đối). Tách riêng khỏi RevealInFileManager để test được cả ba hệ điều hành mà
+// không cần chạy trên hệ đó.
+func revealCommand(goos, abs string) *exec.Cmd {
+	switch goos {
+	case "darwin":
+		return exec.Command("open", "-R", abs)
+	case "windows":
+		// Đúng dạng "/select,<path>": explorer KHÔNG nhận đường dẫn ở đối số riêng.
+		return exec.Command("explorer", "/select,"+abs)
+	default:
+		// URI phải được escape đúng chuẩn, KHÔNG nối chuỗi: tên file người dùng
+		// tự đặt ở hộp thoại Lưu có thể chứa '#' (bên nhận cắt thành fragment,
+		// chọn sai file) hoặc '%' (thành escape sequence hỏng). url.URL lo phần
+		// này — "a b#c" → "a%20b%23c".
+		uri := (&url.URL{Scheme: "file", Path: abs}).String()
+		// --print-reply là BẮT BUỘC để biết lệnh có tới đích hay không: thiếu nó,
+		// dbus-send chỉ gửi rồi thoát 0 ngay cả khi không có service nào đăng ký
+		// FileManager1 (máy chạy i3/sway, WM tối giản…) — runErr = nil, nhánh
+		// xdg-open bên dưới không bao giờ chạy, nút bấm im lặng không làm gì.
+		// --reply-timeout chặn trần chờ: ca hỏng phổ biến nhất (ServiceUnknown)
+		// trả lời ngay, 10s chỉ để chừa chỗ cho file manager khởi động nguội,
+		// thay vì đứng chờ 25s mặc định của dbus-send.
+		return exec.Command("dbus-send", "--session", "--print-reply", "--reply-timeout=10000",
+			"--dest=org.freedesktop.FileManager1",
+			"--type=method_call", "/org/freedesktop/FileManager1",
+			"org.freedesktop.FileManager1.ShowItems",
+			"array:string:"+uri, "string:")
+	}
 }
 
 // ---------- Team metrics (trang Team) ----------

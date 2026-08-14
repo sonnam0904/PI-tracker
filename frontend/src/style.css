@@ -577,6 +577,7 @@ input, textarea { user-select: text; }
 .toast {
   position: fixed; right: 22px; bottom: 22px;
   max-width: 60vw;
+  display: flex; align-items: center; gap: 12px;
   background: var(--panel-2);
   border: 1px solid var(--green);
   color: var(--green);
@@ -585,8 +586,22 @@ input, textarea { user-select: text; }
   font-size: 13px; font-weight: 600;
   box-shadow: var(--shadow);
   z-index: 60;
-  word-break: break-all;
 }
+/* Đường dẫn dài phải tự xuống dòng, nhưng KHÔNG được đẩy nút ra ngoài toast:
+   nút giữ nguyên bề ngang, phần chữ co lại. */
+.toast-text { word-break: break-all; min-width: 0; }
+.toast-action {
+  flex: none;
+  background: var(--accent-soft);
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: var(--radius-sm);
+  padding: 6px 11px;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toast-action:hover { background: var(--green); color: var(--panel); }
 
 /* ===== Gantt ===== */
 .gantt-wrap {

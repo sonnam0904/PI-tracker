@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { GetMetrics, ExportReport, ListPeople } from '../../wailsjs/go/main/App'
+import { GetMetrics, ExportReport, ListPeople, RevealInFileManager } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { monthStart, addMonths, ymKey, monthLabel, parseISODate, fmtDM, todayISO } from '../lib/date'
 
@@ -57,6 +57,9 @@ function shift(n) {
 const showExport = ref(false)
 const exporting = ref(false)
 const exportMsg = ref('')
+// Đường dẫn file vừa xuất — nút "Mở thư mục" trên toast trỏ đúng vào file này.
+const exportPath = ref('')
+let exportTimer = null
 
 async function doExport(fmtType) {
   showExport.value = false
@@ -65,13 +68,30 @@ async function doExport(fmtType) {
   try {
     const path = await ExportReport(ymKey(month.value), fmtType, asOf.value, assigneeId.value)
     if (path) {
+      exportPath.value = path
       exportMsg.value = `✓ Đã xuất báo cáo: ${path}`
-      setTimeout(() => (exportMsg.value = ''), 10000)
+      // Hẹn giờ mới thay hẹn giờ cũ: xuất liên tiếp hai file thì toast của file
+      // sau không bị hẹn giờ của file trước tắt sớm.
+      clearTimeout(exportTimer)
+      exportTimer = setTimeout(() => {
+        exportMsg.value = ''
+        exportPath.value = ''
+      }, 15000)
     }
   } catch (e) {
     error.value = String(e)
   } finally {
     exporting.value = false
+  }
+}
+
+// Mở trình quản lý tệp tại file vừa xuất. Lỗi (thiếu file manager, file đã bị
+// xóa) hiện ở dòng lỗi chung chứ không nuốt im lặng.
+async function openExportFolder() {
+  try {
+    await RevealInFileManager(exportPath.value)
+  } catch (e) {
+    error.value = String(e)
   }
 }
 
@@ -275,7 +295,10 @@ const aiRoi = computed(() => {
     </div>
 
     <div v-if="error" class="err">{{ error }}</div>
-    <div v-if="exportMsg" class="toast">{{ exportMsg }}</div>
+    <div v-if="exportMsg" class="toast">
+      <span class="toast-text">{{ exportMsg }}</span>
+      <button v-if="exportPath" class="toast-action" @click="openExportFolder">📂 Mở thư mục</button>
+    </div>
 
     <template v-if="m">
       <div class="stats-grid">

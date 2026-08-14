@@ -66,8 +66,22 @@ def clean_title(title):
 
 # ---------------------------------------------------------------- pham vi thang
 def in_month(task, month):
-    """Task cham vao ky bao cao: bat dau HOAC hoan thanh trong thang."""
-    return (task.get("startDate") or "")[:7] == month or (task.get("doneDate") or "")[:7] == month
+    """Task thuoc ky bao cao. doneDate quyet dinh ky — task done thang nao tinh
+    vao thang do, khong quan tam bat dau khi nao.
+
+    Task chua done thi khong co doneDate, xet theo startDate de van hien o muc
+    Ton dong / Chuyen tiep cua thang no bat dau.
+
+    KHONG dung "startDate HOAC doneDate": task bat dau cuoi thang N va done sang
+    thang N+1 se lot vao CA HAI ky, nen cong cac bao cao thang lai se vuot ngay
+    cong thuc te. Vi du that: task start 31/07 done 05/08 mang 5 ngay cong, gan
+    nhu toan bo lam trong thang 08, nhung bi tinh tron vao thang 07 roi dem lai
+    o thang 08.
+    """
+    done = (task.get("doneDate") or "")[:7]
+    if done:
+        return done == month
+    return (task.get("startDate") or "")[:7] == month
 
 
 def is_carryover(task):
