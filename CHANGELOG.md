@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/sonnam0904/PI-tracker/compare/v1.9.0...v1.10.0) (2026-08-14)
+
+
+### Features
+
+* add report generation enhancements and file management features ([621fceb](https://github.com/sonnam0904/PI-tracker/commit/621fceb7021723b9c407d500666a05c07913de23))
+
 # [1.9.0](https://github.com/sonnam0904/PI-tracker/compare/v1.8.0...v1.9.0) (2026-07-31)
 
 
